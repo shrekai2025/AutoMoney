@@ -28,11 +28,11 @@ function StrategyDetailsWrapper() {
   const { id } = useParams<{ id: string }>();
 
   const handleBack = () => {
-    navigate("/marketplace");
+    navigate("/strategy");
   };
 
   if (!id) {
-    navigate("/marketplace");
+    navigate("/strategy");
     return null;
   }
 
@@ -59,8 +59,8 @@ function Navigation() {
             <div className="hidden md:flex gap-1">
               <NavButton to="/exploration" icon={Activity}>Mind Hub</NavButton>
               <NavButton to="/research" icon={MessageSquare}>Research</NavButton>
-              <NavButton to="/marketplace" icon={TrendingUp}>Strategy</NavButton>
-              <NavButton to="/dashboard" icon={LayoutDashboard}>Portfolio</NavButton>
+              <NavButton to="/strategy" icon={TrendingUp}>Strategy</NavButton>
+              <NavButton to="/portfolio" icon={LayoutDashboard}>Portfolio</NavButton>
               {isAdmin && <NavButton to="/admin" icon={Shield} color="purple">Admin</NavButton>}
             </div>
           </div>
@@ -112,8 +112,8 @@ function MobileNav() {
 
   const navItems = [
     { to: "/exploration", icon: Activity, label: "Mind Hub", gradient: "from-purple-600 to-pink-500" },
-    { to: "/marketplace", icon: TrendingUp, label: "Strategy", gradient: "from-blue-600 to-blue-500" },
-    { to: "/dashboard", icon: LayoutDashboard, label: "Portfolio", gradient: "from-blue-600 to-blue-500" },
+    { to: "/strategy", icon: TrendingUp, label: "Strategy", gradient: "from-blue-600 to-blue-500" },
+    { to: "/portfolio", icon: LayoutDashboard, label: "Portfolio", gradient: "from-blue-600 to-blue-500" },
   ];
 
   return (
@@ -189,9 +189,9 @@ function AppContent() {
           <Route path="/" element={<Exploration />} />
           <Route path="/exploration" element={<Exploration />} />
           <Route path="/research" element={<ResearchChat />} />
-          <Route path="/marketplace" element={<StrategyMarketplaceWrapper />} />
+          <Route path="/strategy" element={<StrategyMarketplaceWrapper />} />
           <Route path="/strategy/:id" element={<StrategyDetailsWrapper />} />
-          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/portfolio" element={<Dashboard />} />
           <Route path="/admin" element={<AdminPanel />} />
         </Routes>
       </main>

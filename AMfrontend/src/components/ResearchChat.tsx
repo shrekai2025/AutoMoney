@@ -20,8 +20,11 @@ import {
   Clock,
   Copy,
   Check,
+  MessageSquare,
 } from "lucide-react";
 import { getAuth } from "firebase/auth";
+import { useAuth } from "../contexts/AuthContext";
+import { LoginPlaceholder } from "./LoginPlaceholder";
 
 // Add CSS animation for spinner
 const spinnerStyle = `
@@ -87,12 +90,24 @@ const EXAMPLE_QUESTIONS = [
 ];
 
 const ResearchChat = () => {
+  const { isAuthenticated } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentProcessSteps, setCurrentProcessSteps] = useState<ProcessStep[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Show login placeholder if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <LoginPlaceholder
+        title="AI Research Chat"
+        description="Sign in to access our AI-powered research platform. Get multi-dimensional analysis on cryptocurrency markets, macro economics, and trading strategies."
+        icon={MessageSquare}
+      />
+    );
+  }
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });

@@ -58,5 +58,11 @@
     server: {
       port: 3010,
       open: true,
+      proxy: {
+        '/api': {
+          target: 'http://localhost:8000',
+          changeOrigin: true,
+        },
+      },
     },
   });

@@ -37,8 +37,9 @@ async def get_marketplace_strategies(
     - **user_id**: 可选，只显示指定用户的策略（默认显示所有）
     """
     try:
-        # 如果没有指定user_id，则使用当前用户的ID
-        filter_user_id = user_id if user_id else current_user.id
+        # 如果没有指定user_id，显示所有用户的策略（策略市场是公开的）
+        # 只有明确指定user_id时才进行过滤
+        filter_user_id = user_id  # None表示显示所有
 
         result = await marketplace_service.get_marketplace_list(
             db=db,
@@ -84,26 +85,23 @@ async def deploy_funds(
     current_user: User = Depends(get_current_user),
 ):
     """
-    部署资金到策略
+    部署资金到策略（激活策略）
 
     - **portfolio_id**: Portfolio UUID
     - **amount**: 部署金额（必须 > 0）
 
-    注意：此功能将在未来版本中实现完整的资金管理逻辑
+    注意：当前为模拟盘功能，未来将实现真实资金划转
     """
     try:
-        # TODO: 实现资金部署逻辑
-        # 1. 验证用户余额
-        # 2. 扣除用户账户资金
-        # 3. 增加Portfolio余额
-        # 4. 记录交易
-
-        return {
-            "success": True,
-            "message": f"Successfully deployed ${amount} to strategy {portfolio_id}",
-            "portfolio_id": portfolio_id,
-            "amount": amount,
-        }
+        result = await marketplace_service.deploy_strategy(
+            db=db,
+            portfolio_id=portfolio_id,
+            user_id=current_user.id,
+            initial_balance=amount,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"部署资金失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to deploy funds: {str(e)}")

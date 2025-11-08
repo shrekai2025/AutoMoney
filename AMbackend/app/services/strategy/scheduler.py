@@ -92,7 +92,17 @@ class StrategyScheduler:
             max_instances=1,
         )
 
-        # Job 2: 组合快照 (每10分钟)
+        # Job 2: 批量策略执行 (每10分钟) - 成本优化版
+        self.scheduler.add_job(
+            self.batch_execute_strategies_job,
+            trigger=IntervalTrigger(minutes=10),
+            id="batch_strategies",
+            name="批量策略执行（共享Agent分析）",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Job 3: 组合快照 (每10分钟)
         self.scheduler.add_job(
             self.create_portfolio_snapshots_job,
             trigger=IntervalTrigger(minutes=10),
@@ -102,32 +112,36 @@ class StrategyScheduler:
             max_instances=1,
         )
 
-        logger.info("全局定时任务已添加")
+        logger.info("全局定时任务已添加（包括批量执行模式）")
 
     async def _add_all_portfolio_jobs(self):
-        """为所有活跃策略添加独立的定时任务"""
+        """
+        为所有活跃策略添加统一的批量执行任务
+
+        优化说明：
+        - 所有Portfolio共享同一个定时任务（而不是每个Portfolio一个任务）
+        - 每次执行时，先运行一次Agent分析，然后所有Portfolio共享这个分析结果
+        - 大幅降低LLM调用成本（从 N次 降低到 1次）
+        """
         try:
-            print(f"[Scheduler] 开始为活跃策略添加定时任务...")
+            print(f"[Scheduler] 开始添加批量策略执行任务...")
+
+            # 注意：这里不再为每个Portfolio单独创建任务
+            # 而是使用统一的批量执行任务（在 _add_global_jobs 中已添加）
+
             async with self.SessionLocal() as db:
                 result = await db.execute(
                     select(Portfolio).where(Portfolio.is_active == True)
                 )
                 portfolios = result.scalars().all()
-                print(f"[Scheduler] 找到 {len(portfolios)} 个活跃策略")
+                print(f"[Scheduler] 找到 {len(portfolios)} 个活跃策略，将使用批量执行模式")
 
-                for portfolio in portfolios:
-                    self.add_portfolio_job(
-                        portfolio_id=str(portfolio.id),
-                        portfolio_name=portfolio.name,
-                        period_minutes=portfolio.rebalance_period_minutes,
-                    )
-
-                logger.info(f"已为 {len(portfolios)} 个活跃策略添加独立任务")
-                print(f"[Scheduler] ✓ 已为 {len(portfolios)} 个活跃策略添加定时任务")
+                logger.info(f"批量执行模式：{len(portfolios)} 个Portfolio将共享Agent分析结果")
+                print(f"[Scheduler] ✓ 批量执行模式已启用，成本优化：Agent调用从 {len(portfolios)}次/周期 降至 1次/周期")
 
         except Exception as e:
-            logger.error(f"添加策略任务失败: {e}", exc_info=True)
-            print(f"[Scheduler] ❌ 添加策略任务失败: {e}")
+            logger.error(f"检查活跃策略失败: {e}", exc_info=True)
+            print(f"[Scheduler] ❌ 检查活跃策略失败: {e}")
 
     def add_portfolio_job(
         self, portfolio_id: str, portfolio_name: str, period_minutes: int
@@ -274,6 +288,93 @@ class StrategyScheduler:
 
         except Exception as e:
             logger.error(f"策略执行 Job 失败: {portfolio_id} - {e}", exc_info=True)
+
+    async def batch_execute_strategies_job(self):
+        """
+        批量执行所有活跃策略 - 成本优化版本
+
+        工作流程:
+        1. 获取所有活跃Portfolio
+        2. 执行一次Agent分析（所有Portfolio共享）
+        3. 为每个Portfolio应用分析结果并执行交易
+
+        成本优化:
+        - LLM调用次数: 从 N次 降至 1次 (N = Portfolio数量)
+        - 适用场景: 所有Portfolio使用相同的策略配置
+        """
+        logger.info("开始批量执行策略（共享Agent分析）")
+
+        try:
+            async with self.SessionLocal() as db:
+                # 1. 获取所有活跃的Portfolio
+                result = await db.execute(
+                    select(Portfolio)
+                    .options(selectinload(Portfolio.holdings))
+                    .where(Portfolio.is_active == True)
+                )
+                portfolios = result.scalars().all()
+
+                if not portfolios:
+                    logger.info("没有活跃的Portfolio，跳过批量执行")
+                    return
+
+                logger.info(f"找到 {len(portfolios)} 个活跃Portfolio，开始共享执行")
+
+                # 2. 采集市场数据（所有Portfolio共享）
+                market_data = await self._fetch_market_data()
+
+                # 3. 执行一次Agent分析（关键优化点！）
+                logger.info("执行Agent分析（所有Portfolio共享此结果）")
+                from app.services.strategy.real_agent_executor import RealAgentExecutor
+                agent_executor = RealAgentExecutor()
+
+                # 使用第一个Portfolio的配置执行Agent（因为所有Portfolio配置相同）
+                first_portfolio = portfolios[0]
+                agent_outputs, agent_errors = await agent_executor.execute_all_agents(
+                    market_data=market_data,
+                    db=db,
+                    user_id=first_portfolio.user_id,
+                )
+
+                logger.info(f"Agent分析完成，开始为 {len(portfolios)} 个Portfolio应用结果")
+
+                # 4. 为每个Portfolio应用Agent分析结果
+                for portfolio in portfolios:
+                    try:
+                        logger.info(f"为Portfolio执行策略: {portfolio.name} (ID: {portfolio.id})")
+
+                        # 使用共享的agent_outputs执行策略
+                        execution = await strategy_orchestrator.execute_strategy(
+                            db=db,
+                            user_id=portfolio.user_id,
+                            portfolio_id=str(portfolio.id),
+                            market_data=market_data,
+                            agent_outputs=agent_outputs,  # 使用共享的分析结果
+                        )
+
+                        # 更新执行时间
+                        portfolio.last_execution_time = datetime.utcnow()
+                        await db.commit()
+
+                        logger.info(
+                            f"Portfolio执行完成 - {portfolio.name}, "
+                            f"信号: {execution.signal}, 状态: {execution.status}"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Portfolio执行失败: {portfolio.name} - {e}",
+                            exc_info=True
+                        )
+                        await db.rollback()
+
+                logger.info(
+                    f"批量执行完成 - 共 {len(portfolios)} 个Portfolio, "
+                    f"Agent调用: 1次 (节省 {len(portfolios)-1} 次LLM调用)"
+                )
+
+        except Exception as e:
+            logger.error(f"批量策略执行Job失败: {e}", exc_info=True)
 
     async def collect_market_data_job(self):
         """

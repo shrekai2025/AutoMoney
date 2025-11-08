@@ -24,6 +24,9 @@ export interface StrategyCard {
   squad_size: number;
   risk_level: string;
   history: HistoryPoint[];
+  is_active: boolean;            // 策略是否已激活
+  initial_balance?: number;      // 初始资金
+  deployed_at?: string;          // 激活时间
 }
 
 export interface MarketplaceResponse {

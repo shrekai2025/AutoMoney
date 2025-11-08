@@ -284,6 +284,9 @@ class StrategyMarketplaceCard(BaseModel):
     squad_size: int
     risk_level: str
     history: List[HistoryPoint]
+    is_active: bool  # 策略是否已激活（用户是否已部署资金）
+    initial_balance: Optional[float] = None  # 初始资金
+    deployed_at: Optional[str] = None  # 激活/部署时间
 
 
 class StrategyMarketplaceListResponse(BaseModel):

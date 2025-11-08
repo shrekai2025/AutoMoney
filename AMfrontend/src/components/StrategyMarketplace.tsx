@@ -4,13 +4,17 @@ import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { LineChart, Line, ResponsiveContainer, YAxis } from "recharts";
-import { TrendingUp, TrendingDown, Shield, Target, Users, Flame, Clock } from "lucide-react";
+import { TrendingUp, TrendingDown, Shield, Target, Users, Flame, Clock, Lock } from "lucide-react";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import redCharacter from "figma:asset/e7df430614095df0bf6f8507a2c9ff6a9129eaaf.png";
 import greenCharacter from "figma:asset/c5bd439c73b523a0fe77e12f24d55c9e5fb9c986.png";
-import { fetchMarketplaceStrategies } from "../lib/marketplaceApi";
+import { fetchMarketplaceStrategies, deployFunds } from "../lib/marketplaceApi";
 import type { StrategyCard } from "../types/strategy";
 import { formatPoolSize } from "../utils/strategyUtils";
+import { useAuth } from "../contexts/AuthContext";
+import { LoginPlaceholder } from "./LoginPlaceholder";
+import { StrategyActivationModal } from "./StrategyActivationModal";
+import { toast } from "sonner";
 
 // Character avatars
 const characters = [redCharacter, greenCharacter];
@@ -27,11 +31,28 @@ interface StrategyMarketplaceProps {
 }
 
 export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplaceProps) {
+  const { isAuthenticated } = useAuth();
   const [strategies, setStrategies] = useState<StrategyCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState("return");
   const [riskFilter, setRiskFilter] = useState<string>("all");
+
+  // Activation modal state
+  const [activationModalOpen, setActivationModalOpen] = useState(false);
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyCard | null>(null);
+  const [isActivating, setIsActivating] = useState(false);
+
+  // Show login placeholder if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <LoginPlaceholder
+        title="Strategy Marketplace"
+        description="Sign in to explore and deploy elite AI trading squads. Browse strategies, compare performance metrics, and join successful trading communities."
+        icon={Users}
+      />
+    );
+  }
 
   useEffect(() => {
     // Auth is already initialized by AuthContext, load data immediately
@@ -54,6 +75,46 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
       setLoading(false);
     }
   }
+
+  const handleActivateClick = (strategy: StrategyCard, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent card click
+    setSelectedStrategy(strategy);
+    setActivationModalOpen(true);
+  };
+
+  const handleActivateConfirm = async (amount: number) => {
+    if (!selectedStrategy) return;
+
+    setIsActivating(true);
+    try {
+      await deployFunds(selectedStrategy.id, amount);
+
+      toast.success("Strategy Activated!", {
+        description: `Successfully deployed $${amount} to ${selectedStrategy.name}`,
+      });
+
+      // Reload strategies to get updated state
+      await loadStrategies();
+
+      setActivationModalOpen(false);
+      setSelectedStrategy(null);
+    } catch (err) {
+      console.error('Failed to activate strategy:', err);
+      toast.error("Activation Failed", {
+        description: err instanceof Error ? err.message : "Failed to activate strategy. Please try again.",
+      });
+      throw err; // Re-throw to let modal handle it
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
+  const handleCardClick = (strategy: StrategyCard) => {
+    // Only allow navigation if strategy is active
+    if (strategy.is_active) {
+      onSelectStrategy(strategy.id);
+    }
+  };
   const getRiskColor = (risk: string) => {
     switch (risk) {
       case "low":
@@ -202,10 +263,43 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
           return (
             <Card
               key={strategy.id}
-              className="bg-slate-900/50 border-slate-700/50 backdrop-blur-sm hover:bg-slate-800/70 hover:shadow-xl hover:shadow-purple-500/10 transition-all duration-300 hover:scale-[1.02] cursor-pointer group relative overflow-hidden"
-              onClick={() => onSelectStrategy(strategy.id)}
+              className={`bg-slate-900/50 border-slate-700/50 backdrop-blur-sm transition-all duration-300 group relative overflow-hidden ${
+                strategy.is_active
+                  ? 'hover:bg-slate-800/70 hover:shadow-xl hover:shadow-purple-500/10 hover:scale-[1.02] cursor-pointer'
+                  : 'cursor-default'
+              }`}
+              onClick={() => handleCardClick(strategy)}
             >
               <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 via-transparent to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+
+              {/* Inactive Overlay */}
+              {!strategy.is_active && (
+                <div
+                  className="absolute inset-0 z-10 flex items-center justify-center"
+                  style={{
+                    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                    backdropFilter: 'blur(4px)',
+                  }}
+                >
+                  <div className="text-center px-4">
+                    <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-full flex items-center justify-center">
+                      <Lock className="w-8 h-8 text-purple-400" />
+                    </div>
+                    <h3 className="text-white font-semibold mb-2">Strategy Not Activated</h3>
+                    <p className="text-slate-400 text-xs mb-4 max-w-xs">
+                      Deploy funds to activate this AI trading squad and start automated trading
+                    </p>
+                    <Button
+                      onClick={(e) => handleActivateClick(strategy, e)}
+                      className="bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 text-white shadow-lg"
+                      size="sm"
+                    >
+                      <Users className="w-4 h-4 mr-2" />
+                      Deposit and Run
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               <CardHeader className="pb-1.5 pt-2.5 px-3 relative">
                 <div className="flex items-start gap-2 mb-1.5">
@@ -316,16 +410,29 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
 
                 <Button
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 border-0 shadow-lg shadow-purple-500/30 group-hover:shadow-purple-500/50 transition-shadow h-7 text-xs"
-                  onClick={() => onSelectStrategy(strategy.id)}
+                  onClick={() => handleCardClick(strategy)}
+                  disabled={!strategy.is_active}
                 >
                   <Users className="w-3 h-3 mr-1.5" />
-                  Deploy Squad
+                  {strategy.is_active ? "View Details" : "Deploy Squad"}
                 </Button>
               </CardContent>
             </Card>
           );
         })}
       </div>
+
+      {/* Activation Modal */}
+      <StrategyActivationModal
+        open={activationModalOpen}
+        onClose={() => {
+          setActivationModalOpen(false);
+          setSelectedStrategy(null);
+        }}
+        onConfirm={handleActivateConfirm}
+        strategyName={selectedStrategy?.name || ""}
+        isLoading={isActivating}
+      />
     </div>
   );
 }

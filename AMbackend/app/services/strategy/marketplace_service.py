@@ -168,8 +168,8 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
     ) -> StrategyMarketplaceListResponse:
         """获取策略市场列表"""
         try:
-            # 查询所有活跃的投资组合
-            stmt = select(Portfolio).where(Portfolio.is_active == True)
+            # 查询所有投资组合（包括未激活的，用于展示策略市场）
+            stmt = select(Portfolio)
 
             # 如果指定用户，只返回该用户的组合
             if user_id:
@@ -217,6 +217,9 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                     squad_size=3,  # 固定3个Agent
                     risk_level=mapped_risk_level,
                     history=history,
+                    is_active=portfolio.is_active,  # 策略激活状态
+                    initial_balance=float(portfolio.initial_balance) if portfolio.initial_balance else None,
+                    deployed_at=portfolio.created_at.isoformat() if portfolio.is_active else None,
                 )
                 strategies.append(strategy_card)
 
@@ -1069,6 +1072,86 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             raise
         except Exception as e:
             logger.error(f"获取交易记录失败: {e}", exc_info=True)
+            raise
+
+    async def deploy_strategy(
+        self,
+        db: AsyncSession,
+        portfolio_id: str,
+        user_id: int,
+        initial_balance: float,
+    ) -> Dict[str, Any]:
+        """
+        部署资金到策略（激活策略）
+
+        Args:
+            db: 数据库会话
+            portfolio_id: Portfolio UUID
+            user_id: 用户ID
+            initial_balance: 初始资金
+
+        Returns:
+            部署结果信息
+        """
+        try:
+            # 1. 查询Portfolio
+            stmt = select(Portfolio).where(Portfolio.id == portfolio_id)
+            result = await db.execute(stmt)
+            portfolio = result.scalar_one_or_none()
+
+            if not portfolio:
+                raise ValueError(f"Strategy not found: {portfolio_id}")
+
+            # 2. 验证所有权（可选：如果需要）
+            if portfolio.user_id != user_id:
+                raise ValueError(f"Strategy does not belong to user {user_id}")
+
+            # 3. 检查是否已经激活
+            if portfolio.is_active:
+                raise ValueError(f"Strategy is already active")
+
+            # 4. 验证金额（最小100 USDT）
+            if initial_balance < 100:
+                raise ValueError(f"Minimum deposit amount is 100 USDT")
+
+            # 5. 激活策略并设置初始资金
+            portfolio.is_active = True
+            portfolio.initial_balance = Decimal(str(initial_balance))
+            portfolio.current_balance = Decimal(str(initial_balance))
+            portfolio.total_value = Decimal(str(initial_balance))
+            portfolio.updated_at = datetime.now(timezone.utc)
+
+            await db.commit()
+            await db.refresh(portfolio)
+
+            # 6. 添加到调度器（启动定时执行）
+            try:
+                from app.services.strategy.scheduler import strategy_scheduler
+                await strategy_scheduler.add_portfolio_task(portfolio.id, portfolio.rebalance_period_minutes)
+                logger.info(f"[Deploy] 已将策略 {portfolio.id} 添加到调度器")
+            except Exception as e:
+                logger.warning(f"[Deploy] 添加调度任务失败（非致命错误）: {e}")
+
+            logger.info(
+                f"[Deploy] 成功激活策略: portfolio_id={portfolio_id}, "
+                f"user_id={user_id}, initial_balance={initial_balance}"
+            )
+
+            return {
+                "success": True,
+                "message": f"Successfully deployed ${initial_balance} to strategy",
+                "portfolio_id": str(portfolio.id),
+                "amount": initial_balance,
+                "is_active": True,
+                "deployed_at": portfolio.updated_at.isoformat(),
+            }
+
+        except ValueError as e:
+            await db.rollback()
+            raise
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"部署策略失败: {e}", exc_info=True)
             raise
 
 

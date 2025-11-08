@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
-import { ArrowUpRight, ArrowDownRight, TrendingUp, Plus, Minus, Shield, Zap } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, TrendingUp, Plus, Minus, Shield, Zap, LayoutDashboard } from "lucide-react";
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { Checkbox } from "./ui/checkbox";
 import { Badge } from "./ui/badge";
+import { useAuth } from "../contexts/AuthContext";
+import { LoginPlaceholder } from "./LoginPlaceholder";
 
 // Mock data
 const portfolioHistory = [
@@ -59,6 +61,7 @@ const myInvestments = [
 ];
 
 export function Dashboard() {
+  const { isAuthenticated } = useAuth();
   const totalValue = 108420;
   const totalPnl = 8420;
   const totalPnlPercent = 8.42;
@@ -68,6 +71,17 @@ export function Dashboard() {
   const [showStrategy1, setShowStrategy1] = useState(true);
   const [showStrategy2, setShowStrategy2] = useState(true);
   const [showStrategy3, setShowStrategy3] = useState(true);
+
+  // Show login placeholder if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <LoginPlaceholder
+        title="Portfolio Dashboard"
+        description="Sign in to view your portfolio performance, track your AI trading squads, and monitor your investments in real-time."
+        icon={LayoutDashboard}
+      />
+    );
+  }
 
   const getStatusBadge = (status: string) => {
     switch(status) {
