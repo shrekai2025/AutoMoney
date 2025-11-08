@@ -6,7 +6,7 @@ import axios, { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import { getAuth } from 'firebase/auth';
 import { initializeFirebase } from './firebase';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = '';
 
 // Firebase 初始化状态
 let firebaseInitialized = false;

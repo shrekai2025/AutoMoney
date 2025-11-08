@@ -155,7 +155,7 @@ const ResearchChat = () => {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const response = await fetch("http://localhost:8000/api/v1/research/chat", {
+      const response = await fetch("/api/v1/research/chat", {
         method: "POST",
         headers: headers,
         body: JSON.stringify({

@@ -51,7 +51,7 @@ export function TradeHistoryModal({
     try {
       const token = localStorage.getItem("token");
       const response = await fetch(
-        `http://localhost:8000/api/v1/marketplace/${portfolioId}/trades?page=${currentPage}&page_size=${pageSize}`,
+        `/api/v1/marketplace/${portfolioId}/trades?page=${currentPage}&page_size=${pageSize}`,
         {
           headers: {
             Authorization: `Bearer ${token}`,

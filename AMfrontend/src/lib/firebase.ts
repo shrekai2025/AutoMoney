@@ -34,7 +34,7 @@ export async function initializeFirebase(): Promise<{ app: FirebaseApp; auth: Au
   initializationPromise = (async () => {
     try {
       // 从后端API获取Firebase配置
-      const response = await fetch('http://localhost:8000/api/v1/auth/config');
+      const response = await fetch('/api/v1/auth/config');
       if (!response.ok) {
         throw new Error('Failed to fetch Firebase config');
       }

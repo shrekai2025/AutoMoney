@@ -166,7 +166,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
     try {
       const token = localStorage.getItem("token");
       const response = await fetch(
-        `http://localhost:8000/api/v1/marketplace/${strategyId}/trades?page=1&page_size=3`,
+        `/api/v1/marketplace/${strategyId}/trades?page=1&page_size=3`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
