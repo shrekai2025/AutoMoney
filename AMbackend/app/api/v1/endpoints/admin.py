@@ -52,6 +52,10 @@ async def get_all_strategies(
                 total_pnl=float(portfolio.total_pnl),
                 total_pnl_percent=portfolio.total_pnl_percent,
                 rebalance_period_minutes=portfolio.rebalance_period_minutes,
+                agent_weights=portfolio.agent_weights,
+                consecutive_signal_threshold=portfolio.consecutive_signal_threshold,
+                acceleration_multiplier_min=portfolio.acceleration_multiplier_min,
+                acceleration_multiplier_max=portfolio.acceleration_multiplier_max,
                 created_at=portfolio.created_at.isoformat(),
                 updated_at=portfolio.updated_at.isoformat() if portfolio.updated_at else None,
             )

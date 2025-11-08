@@ -29,10 +29,12 @@ class StrategyExecution(Base):
     signal_strength = Column(Float)
     position_size = Column(Float)
     risk_level = Column(String(20))
+    llm_summary = Column(Text)  # LLM生成的策略总结
 
     # Execution info
     execution_duration_ms = Column(Integer)
     error_message = Column(Text)
+    error_details = Column(JSONB, comment="详细错误信息（包含失败的agent、重试次数等）")
 
     created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)

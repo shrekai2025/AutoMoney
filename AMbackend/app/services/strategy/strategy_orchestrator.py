@@ -27,6 +27,7 @@ from app.services.decision.signal_generator import SignalGenerator, TradeSignal
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.portfolio_service import portfolio_service
 from app.services.strategy.real_agent_executor import real_agent_executor
+from app.agents.general_analysis_agent import general_analysis_agent
 
 logger = logging.getLogger(__name__)
 
@@ -121,24 +122,40 @@ class StrategyOrchestrator:
             logger.info(f"创建策略执行记录: {strategy_execution_id}")
 
             # Step 2: 使用提供的 Agent 输出，或执行真实 Agents
+            agent_errors = {}
             if not agent_outputs:
                 logger.info("开始执行真实 Agent 分析")
                 try:
-                    agent_outputs = await real_agent_executor.execute_all_agents(
+                    agent_outputs, agent_errors = await real_agent_executor.execute_all_agents(
                         market_data=market_data,
                         db=db,
                         user_id=user_id,
                         strategy_execution_id=strategy_execution_id,
                     )
-                    logger.info(f"Agent 执行成功: {agent_outputs.keys()}")
+                    logger.info(f"✅ Agent 执行成功: {agent_outputs.keys()}")
                 except Exception as e:
-                    logger.error(f"Agent 执行失败: {e}", exc_info=True)
-                    # 使用默认值
-                    agent_outputs = {
-                        "macro": {"signal": "NEUTRAL", "confidence": 0.5},
-                        "onchain": {"signal": "NEUTRAL", "confidence": 0.5},
-                        "ta": {"signal": "NEUTRAL", "confidence": 0.5},
-                    }
+                    logger.error(f"❌ Agent 执行失败: {e}", exc_info=True)
+                    # Agent工作错误 - 不继续执行策略
+                    strategy_execution.status = StrategyStatus.FAILED.value
+                    strategy_execution.error_message = f"Agent工作错误: {str(e)}"
+
+                    # 记录详细的错误信息
+                    from app.services.strategy.real_agent_executor import AgentExecutionError
+                    if isinstance(e, AgentExecutionError):
+                        strategy_execution.error_details = {
+                            "error_type": "agent_execution_failed",
+                            "failed_agent": e.agent_name,
+                            "error_message": e.error_message,
+                            "retry_count": e.retry_count,
+                        }
+                    else:
+                        strategy_execution.error_details = {
+                            "error_type": "unknown_error",
+                            "error_message": str(e),
+                        }
+
+                    await db.commit()
+                    return strategy_execution
 
             # Step 3: 计算信念分数
             conviction_input = ConvictionInput(
@@ -148,26 +165,54 @@ class StrategyOrchestrator:
                 market_data=market_data,
             )
 
-            conviction_result = self.conviction_calculator.calculate(conviction_input)
+            # 使用Portfolio配置的agent_weights，如果没有配置则使用默认权重
+            custom_weights = portfolio.agent_weights if portfolio.agent_weights else None
+            conviction_result = self.conviction_calculator.calculate(
+                conviction_input,
+                custom_weights=custom_weights
+            )
 
             # Step 4: 计算当前仓位
             current_position = await self._calculate_position_ratio(portfolio, market_data)
 
-            # Step 5: 生成交易信号
+            # Step 5: 准备连续信号状态和交易阈值配置
+            portfolio_state = {
+                "consecutive_bullish_count": portfolio.consecutive_bullish_count or 0,
+                "last_conviction_score": portfolio.last_conviction_score,
+                "consecutive_signal_threshold": portfolio.consecutive_signal_threshold or 30,
+                "acceleration_multiplier_min": portfolio.acceleration_multiplier_min or 1.1,
+                "acceleration_multiplier_max": portfolio.acceleration_multiplier_max or 2.0,
+                # 交易阈值配置
+                "fg_circuit_breaker_threshold": portfolio.fg_circuit_breaker_threshold or 20,
+                "fg_position_adjust_threshold": portfolio.fg_position_adjust_threshold or 30,
+                "buy_threshold": portfolio.buy_threshold or 50,
+                "partial_sell_threshold": portfolio.partial_sell_threshold or 50,
+                "full_sell_threshold": portfolio.full_sell_threshold or 45,
+            }
+
+            # Step 6: 生成交易信号
             signal_result = self.signal_generator.generate_signal(
                 conviction_score=conviction_result.score,
                 market_data=market_data,
                 current_position=current_position,
+                portfolio_state=portfolio_state,
             )
 
-            # Step 6: 更新策略执行记录的信号信息
+            # Step 7: 更新连续信号计数器
+            await self._update_consecutive_signals(
+                portfolio=portfolio,
+                conviction_score=conviction_result.score,
+                signal=signal_result.signal,
+            )
+
+            # Step 8: 更新策略执行记录的信号信息
             strategy_execution.conviction_score = conviction_result.score
             strategy_execution.signal = signal_result.signal.value
             strategy_execution.signal_strength = signal_result.signal_strength
             strategy_execution.position_size = signal_result.position_size
             strategy_execution.risk_level = signal_result.risk_level.value
 
-            # Step 7: 执行交易（如果需要）
+            # Step 9: 执行交易（如果需要）
             trade = None
             if signal_result.should_execute and signal_result.signal != TradeSignal.HOLD:
                 try:
@@ -185,7 +230,7 @@ class StrategyOrchestrator:
                     strategy_execution.error_message = str(e)
                     strategy_execution.status = StrategyStatus.FAILED.value
 
-            # Step 7: 更新组合价值
+            # Step 10: 更新组合价值
             btc_price = Decimal(str(market_data.get("btc_price", 0)))
             if btc_price > 0:
                 await portfolio_service.update_portfolio_value(
@@ -194,7 +239,42 @@ class StrategyOrchestrator:
                     current_btc_price=btc_price,
                 )
 
-            # Step 8: 完成策略执行
+            # Step 10.5: 生成LLM总结
+            try:
+                # 构建详细的问题描述，让LLM生成专业的市场分析总结
+                summary_question = (
+                    f"As the squad manager of this trading strategy, provide a comprehensive market outlook "
+                    f"based on our latest analysis. Our conviction score is {conviction_result.score:.1f}% "
+                    f"with a {signal_result.signal.value} signal. Synthesize the insights from all agents "
+                    f"into a professional, actionable market summary for our investors (3-5 sentences). "
+                    f"Focus on key market drivers, risk factors, and our strategic positioning."
+                )
+
+                # 调用general_analysis_agent生成总结
+                synthesis_result = await general_analysis_agent.synthesize(
+                    user_message=summary_question,
+                    agent_outputs=agent_outputs,
+                    chat_history=[]
+                )
+
+                # 保存LLM生成的详细总结（使用answer字段，更专业）
+                strategy_execution.llm_summary = synthesis_result.answer
+                logger.info(f"LLM总结生成成功: {synthesis_result.answer[:100]}...")
+
+            except Exception as e:
+                logger.warning(f"LLM总结生成失败: {e}，使用默认消息")
+                # 如果LLM调用失败，生成专业的默认消息
+                signal_desc = "bullish" if signal_result.signal.value == "BUY" else "bearish" if signal_result.signal.value == "SELL" else "neutral"
+                conviction_desc = "high" if conviction_result.score > 70 else "moderate" if conviction_result.score > 40 else "low"
+
+                strategy_execution.llm_summary = (
+                    f"Our squad analysis indicates a {signal_desc} outlook with {conviction_desc} conviction "
+                    f"({conviction_result.score:.1f}%). Signal: {signal_result.signal.value}. "
+                    f"All agents have completed their analysis. Please check individual agent insights "
+                    f"for detailed market perspectives."
+                )
+
+            # Step 11: 完成策略执行
             if strategy_execution.status == StrategyStatus.RUNNING.value:
                 strategy_execution.status = StrategyStatus.COMPLETED.value
 
@@ -311,6 +391,76 @@ class StrategyOrchestrator:
         )
 
         return trade
+
+    async def _update_consecutive_signals(
+        self,
+        portfolio: Portfolio,
+        conviction_score: float,
+        signal: TradeSignal,
+    ) -> None:
+        """
+        更新组合的连续信号计数器
+
+        逻辑:
+        - 看涨: conviction >= 70, signal = BUY
+        - 看跌: conviction < 40, signal = SELL
+        - 中性: 其他情况 (不计数)
+        """
+        threshold = portfolio.consecutive_signal_threshold or 30
+
+        # 更新上次信念分数
+        portfolio.last_conviction_score = conviction_score
+
+        # 判断当前信号类型（使用新阈值）
+        is_bullish = signal == TradeSignal.BUY and conviction_score >= SignalGenerator.BUY_THRESHOLD
+        is_bearish = signal == TradeSignal.SELL and conviction_score < SignalGenerator.FULL_SELL_THRESHOLD
+
+        # 更新看涨计数
+        if is_bullish:
+            # 连续看涨信号
+            if portfolio.consecutive_bullish_count == 0:
+                portfolio.consecutive_bullish_since = datetime.utcnow()
+
+            portfolio.consecutive_bullish_count = (portfolio.consecutive_bullish_count or 0) + 1
+            # 重置看跌计数
+            portfolio.consecutive_bearish_count = 0
+            portfolio.consecutive_bearish_since = None
+
+            logger.info(
+                f"连续看涨信号 +1: {portfolio.consecutive_bullish_count} "
+                f"(阈值: {threshold}, conviction: {conviction_score:.1f}%)"
+            )
+
+        # 更新看跌计数
+        elif is_bearish:
+            # 连续看跌信号
+            if portfolio.consecutive_bearish_count == 0:
+                portfolio.consecutive_bearish_since = datetime.utcnow()
+
+            portfolio.consecutive_bearish_count = (portfolio.consecutive_bearish_count or 0) + 1
+            # 重置看涨计数
+            portfolio.consecutive_bullish_count = 0
+            portfolio.consecutive_bullish_since = None
+
+            logger.info(
+                f"连续看跌信号 +1: {portfolio.consecutive_bearish_count} "
+                f"(conviction: {conviction_score:.1f}%)"
+            )
+
+        # 中性信号 - 重置所有计数
+        else:
+            if portfolio.consecutive_bullish_count > 0 or portfolio.consecutive_bearish_count > 0:
+                logger.info(
+                    f"中性信号, 重置计数器 "
+                    f"(bullish: {portfolio.consecutive_bullish_count}, "
+                    f"bearish: {portfolio.consecutive_bearish_count}, "
+                    f"conviction: {conviction_score:.1f}%)"
+                )
+
+            portfolio.consecutive_bullish_count = 0
+            portfolio.consecutive_bullish_since = None
+            portfolio.consecutive_bearish_count = 0
+            portfolio.consecutive_bearish_since = None
 
 
 # 全局实例

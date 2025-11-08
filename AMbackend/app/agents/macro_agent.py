@@ -59,6 +59,7 @@ The JSON must match this exact structure with these exact field names:
 {
     "signal": "BULLISH",
     "confidence": 0.75,
+    "score": 45.0,
     "reasoning": "Detailed explanation of your analysis...",
     "macro_indicators": {
         "fed_funds_rate": {"value": 3.87, "impact": "BEARISH", "weight": 0.3},
@@ -78,16 +79,37 @@ The JSON must match this exact structure with these exact field names:
 CRITICAL REQUIREMENTS:
 - "signal" MUST be one of: "BULLISH", "BEARISH", or "NEUTRAL" (no other values like "HOLD")
 - "confidence" MUST be a decimal between 0.0 and 1.0 (NOT a percentage like 72, use 0.72 instead)
+- "score" MUST be a number between -100.0 and 100.0 representing investment conviction:
+  * -100 to -60: Strong bearish (recommend selling/shorting)
+  * -60 to -20: Moderate bearish (reduce exposure)
+  * -20 to +20: Neutral (hold current position)
+  * +20 to +60: Moderate bullish (accumulate gradually)
+  * +60 to +100: Strong bullish (aggressive buying)
 - "macro_indicators" is the exact field name (not "macroeconomic_analysis" or any other name)
 - All field names must match exactly as shown above
 
+🎯 UNDERSTAND THE DIFFERENCE:
+- **confidence** (0-1): Your subjective certainty about this analysis. How reliable is your reading of the data?
+- **score** (-100 to +100): Objective investment recommendation. How much should investors buy or sell?
+
+Example:
+- "I'm 80% confident (confidence=0.8) that the macro environment is moderately bullish (score=+45)"
+- "I'm only 50% confident (confidence=0.5) due to mixed signals, but the bullish signals are stronger (score=+30)"
+
 Be objective, data-driven, and consider the interplay between different macroeconomic forces.
-Your confidence score should reflect:
-- Alignment of indicators (all pointing same direction = higher confidence)
+
+Your score calculation should reflect:
+- Alignment of indicators (all pointing same direction = higher |score|)
 - Strength of each indicator's signal
 - Current market regime and context
+- Overall liquidity and risk appetite environment
 
-⚠️ FINAL REMINDER: Respond with ONLY the JSON object. NO MARKDOWN formatting in string values. Start with {{ and end with }}.
+Your confidence should reflect:
+- Data quality and completeness
+- Clarity of signals (mixed signals = lower confidence)
+- Economic uncertainty and transition periods
+
+⚠️ FINAL REMINDER: Respond with ONLY the JSON object. NO MARKDOWN formatting in string values. Start with { and end with }.
 """
 
     def __init__(self):
@@ -129,6 +151,7 @@ Your confidence score should reflect:
             agent_name=self.agent_name,
             signal=SignalType(analysis["signal"]),
             confidence=float(analysis["confidence"]),
+            score=float(analysis["score"]),
             confidence_level=AgentOutput.get_confidence_level(
                 float(analysis["confidence"])
             ),
@@ -211,6 +234,7 @@ Return your analysis in the specified JSON format."""
             required_fields = [
                 "signal",
                 "confidence",
+                "score",
                 "reasoning",
                 "macro_indicators",
                 "key_factors",
@@ -229,6 +253,11 @@ Return your analysis in the specified JSON format."""
             if not 0.0 <= confidence <= 1.0:
                 raise ValueError(f"Confidence must be between 0 and 1: {confidence}")
 
+            # Validate score range
+            score = float(analysis["score"])
+            if not -100.0 <= score <= 100.0:
+                raise ValueError(f"Score must be between -100 and 100: {score}")
+
             return analysis
 
         except (JSONParseError, ValueError) as e:
@@ -239,6 +268,7 @@ Return your analysis in the specified JSON format."""
             return {
                 "signal": "NEUTRAL",
                 "confidence": 0.3,
+                "score": 0.0,
                 "reasoning": f"Unable to parse LLM response properly. Error: {str(e)}. Raw response available in logs.",
                 "macro_indicators": {},
                 "key_factors": ["Analysis parsing error - please review logs"],

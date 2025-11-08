@@ -31,6 +31,7 @@ import {
   Coins,
   ChevronDown,
   ChevronUp,
+  DollarSign,
 } from "lucide-react";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import redCharacter from "figma:asset/e7df430614095df0bf6f8507a2c9ff6a9129eaaf.png";
@@ -39,6 +40,8 @@ import { fetchStrategyDetail } from "../lib/marketplaceApi";
 import type { StrategyDetail } from "../types/strategy";
 import { convertPerformanceHistory, getAgentIcon, getAgentColor } from "../utils/strategyUtils";
 import { ExecutionDetailsModal } from "./ExecutionDetailsModal";
+import { ExecutionHistoryModal } from "./ExecutionHistoryModal";
+import { TradeHistoryModal } from "./TradeHistoryModal";
 import { binancePriceService } from "../lib/binancePriceService";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -50,6 +53,29 @@ const getCharacterForStrategy = (strategyId: string) => {
   // Use hash of UUID to get consistent character
   const hash = strategyId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return characters[hash % characters.length];
+};
+
+// Helper function to get relative time (e.g., "2 hours ago")
+const getRelativeTime = (dateString: string) => {
+  const now = new Date();
+  const past = new Date(dateString);
+  const diffMs = now.getTime() - past.getTime();
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSeconds < 60) {
+    return 'just now';
+  } else if (diffMinutes < 60) {
+    return `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} ago`;
+  } else if (diffHours < 24) {
+    return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  } else if (diffDays < 7) {
+    return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+  } else {
+    return past.toLocaleDateString();
+  }
 };
 
 interface StrategyDetailsProps {
@@ -68,6 +94,9 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [squadDetailsExpanded, setSquadDetailsExpanded] = useState(false);
+  const [executionHistoryOpen, setExecutionHistoryOpen] = useState(false);
+  const [tradeHistoryOpen, setTradeHistoryOpen] = useState(false);
+  const [recentTrades, setRecentTrades] = useState<any[]>([]);
 
   // Load strategy details from API - only when authenticated
   useEffect(() => {
@@ -122,11 +151,35 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
       setError(null);
       const data = await fetchStrategyDetail(strategyId);
       setStrategy(data);
+
+      // 加载最近3条交易记录
+      await loadRecentTrades();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load strategy details');
       console.error('Failed to load strategy details:', err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadRecentTrades() {
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(
+        `http://localhost:8000/api/v1/marketplace/${strategyId}/trades?page=1&page_size=3`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        setRecentTrades(data.items || []);
+      }
+    } catch (err) {
+      console.error('Failed to load recent trades:', err);
     }
   }
 
@@ -187,6 +240,23 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
   // Convert performance history data
   const performanceData = convertPerformanceHistory(strategy.performance_history);
 
+  // Calculate Y-axis domain: min value - 1000
+  const calculateYAxisDomain = (data: any[]) => {
+    if (!data || data.length === 0) return [0, 'auto'];
+
+    const allValues = data.flatMap(item => {
+      const values = [item.strategy];
+      if (showBTC && item.btc) values.push(item.btc);
+      return values;
+    }).filter(v => v !== null && v !== undefined);
+
+    if (allValues.length === 0) return [0, 'auto'];
+
+    const minValue = Math.min(...allValues);
+    const yMin = Math.max(0, minValue - 1000); // Don't go below 0
+    return [yMin, 'auto'];
+  };
+
   return (
     <div className="space-y-3">
       {/* Back Button and Header */}
@@ -211,6 +281,90 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                   {tag}
                 </Badge>
               ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Core Data Display */}
+      <div className="bg-gradient-to-br from-slate-900/80 to-slate-800/80 border border-slate-600/50 backdrop-blur-sm rounded-xl p-3">
+        <div className="grid grid-cols-2 md:flex md:justify-between md:items-center gap-2">
+          {/* Total P&L */}
+          <div className="flex-1 text-center">
+            <div className="text-xs text-slate-400 mb-0.5">Total P&L</div>
+            <div className={`text-xl font-bold mb-0.5 ${
+              (() => {
+                // 计算实时总账户价值
+                const totalHoldingsValue = strategy.holdings.reduce((sum, holding) => {
+                  const currentPrice = livePrices[holding.symbol] || holding.current_price;
+                  const marketValue = holding.amount * currentPrice;
+                  return sum + marketValue;
+                }, 0);
+                const totalAccountValue = totalHoldingsValue + strategy.current_balance;
+                // Total P&L = 当前总账户价值 - 初始资金
+                const totalPnl = totalAccountValue - strategy.initial_balance;
+                return totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+              })()
+            }`}>
+              {(() => {
+                const totalHoldingsValue = strategy.holdings.reduce((sum, holding) => {
+                  const currentPrice = livePrices[holding.symbol] || holding.current_price;
+                  const marketValue = holding.amount * currentPrice;
+                  return sum + marketValue;
+                }, 0);
+                const totalAccountValue = totalHoldingsValue + strategy.current_balance;
+                const totalPnl = totalAccountValue - strategy.initial_balance;
+                return `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2
+                })}`;
+              })()}
+            </div>
+            <div className={`text-xs font-medium ${
+              strategy.total_pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400'
+            }`}>
+              {strategy.total_pnl_percent >= 0 ? '+' : ''}{strategy.total_pnl_percent.toFixed(2)}%
+            </div>
+          </div>
+
+          {/* Total Account Value */}
+          <div className="flex-1 text-center">
+            <div className="text-xs text-slate-400 mb-0.5">Total Account Value</div>
+            <div className="text-xl font-bold text-white">
+              ${(() => {
+                const totalHoldingsValue = strategy.holdings.reduce((sum, holding) => {
+                  const currentPrice = livePrices[holding.symbol] || holding.current_price;
+                  const marketValue = holding.amount * currentPrice;
+                  return sum + marketValue;
+                }, 0);
+                const totalAccountValue = totalHoldingsValue + strategy.current_balance;
+                return totalAccountValue.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2
+                });
+              })()}
+            </div>
+          </div>
+
+          {/* Available Cash */}
+          <div className="flex-1 text-center">
+            <div className="text-xs text-slate-400 mb-0.5">Available Cash</div>
+            <div className="text-xl font-bold text-white">
+              ${strategy.current_balance.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })}
+            </div>
+          </div>
+
+          {/* Total Fee */}
+          <div className="flex-1 text-center">
+            <div className="text-xs text-slate-400 mb-0.5">Total Fee</div>
+            <div className="text-xl font-bold text-white">
+              ${strategy.total_fees.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })}
             </div>
           </div>
         </div>
@@ -241,20 +395,20 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
             </div>
 
             {/* Manager Message */}
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <h3 className="text-white text-sm font-semibold">Manager Said:</h3>
-                <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/50 text-xs px-1.5 py-0 h-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-slate-300 text-xs leading-relaxed mb-2">
+                {strategy.conviction_summary.message}
+              </p>
+              <div className="flex items-center justify-between gap-2">
+                <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/50 text-xs px-1.5 py-0.5 h-auto">
                   <BarChart3 className="w-2.5 h-2.5 mr-1" />
                   Conviction: {strategy.conviction_summary.score.toFixed(0)}%
                 </Badge>
-              </div>
-              <p className="text-slate-300 text-xs leading-relaxed mb-1">
-                {strategy.conviction_summary.message}
-              </p>
-              <div className="text-slate-500 text-xs flex items-center gap-1">
-                <Clock className="w-3 h-3" />
-                Updated: {new Date(strategy.conviction_summary.updated_at).toLocaleString()}
+                {/* Relative Time - Bottom Right */}
+                <div className="text-slate-500 text-xs flex items-center gap-1 flex-shrink-0">
+                  <Clock className="w-3 h-3" />
+                  {getRelativeTime(strategy.conviction_summary.updated_at)}
+                </div>
               </div>
             </div>
           </div>
@@ -289,7 +443,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
         </CardHeader>
         <CardContent className="px-3 pb-3 pt-0">
           {/* Mission Section */}
-          <div className="mb-4">
+          <div className={squadDetailsExpanded ? "mb-4" : ""}>
             <div className="relative">
               <div
                 className={`text-slate-400 text-xs leading-relaxed overflow-hidden ${
@@ -309,77 +463,79 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
             </div>
           </div>
 
-          {/* Roster Section */}
-          <div>
-            <div className="text-slate-500 text-xs mb-2 font-medium">Squad Roster</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {strategy.squad_agents.map((agent, index) => {
-                const Icon = getAgentIcon(agent.role);
-                const color = getAgentColor(agent.role);
+          {/* Roster Section - Only show when expanded */}
+          {squadDetailsExpanded && (
+            <div>
+              <div className="text-slate-500 text-xs mb-2 font-medium">Squad Roster</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {strategy.squad_agents.map((agent, index) => {
+                  const Icon = getAgentIcon(agent.role);
+                  const color = getAgentColor(agent.role);
 
-                // Map to Tailwind classes instead of inline styles
-                const colorClasses: Record<string, { bg: string, border: string, text: string, badgeBg: string }> = {
-                  'purple': {
-                    bg: 'bg-purple-500/20',
-                    border: 'border-purple-500/50',
-                    text: 'text-purple-400',
-                    badgeBg: 'bg-purple-500/20'
-                  },
-                  'blue': {
-                    bg: 'bg-blue-500/20',
-                    border: 'border-blue-500/50',
-                    text: 'text-blue-400',
-                    badgeBg: 'bg-blue-500/20'
-                  },
-                  'emerald': {
-                    bg: 'bg-emerald-500/20',
-                    border: 'border-emerald-500/50',
-                    text: 'text-emerald-400',
-                    badgeBg: 'bg-emerald-500/20'
-                  },
-                  'amber': {
-                    bg: 'bg-amber-500/20',
-                    border: 'border-amber-500/50',
-                    text: 'text-amber-400',
-                    badgeBg: 'bg-amber-500/20'
-                  },
-                  'red': {
-                    bg: 'bg-red-500/20',
-                    border: 'border-red-500/50',
-                    text: 'text-red-400',
-                    badgeBg: 'bg-red-500/20'
-                  },
-                  'slate': {
-                    bg: 'bg-slate-500/20',
-                    border: 'border-slate-500/50',
-                    text: 'text-slate-400',
-                    badgeBg: 'bg-slate-500/20'
-                  }
-                };
+                  // Map to Tailwind classes instead of inline styles
+                  const colorClasses: Record<string, { bg: string, border: string, text: string, badgeBg: string }> = {
+                    'purple': {
+                      bg: 'bg-purple-500/20',
+                      border: 'border-purple-500/50',
+                      text: 'text-purple-400',
+                      badgeBg: 'bg-purple-500/20'
+                    },
+                    'blue': {
+                      bg: 'bg-blue-500/20',
+                      border: 'border-blue-500/50',
+                      text: 'text-blue-400',
+                      badgeBg: 'bg-blue-500/20'
+                    },
+                    'emerald': {
+                      bg: 'bg-emerald-500/20',
+                      border: 'border-emerald-500/50',
+                      text: 'text-emerald-400',
+                      badgeBg: 'bg-emerald-500/20'
+                    },
+                    'amber': {
+                      bg: 'bg-amber-500/20',
+                      border: 'border-amber-500/50',
+                      text: 'text-amber-400',
+                      badgeBg: 'bg-amber-500/20'
+                    },
+                    'red': {
+                      bg: 'bg-red-500/20',
+                      border: 'border-red-500/50',
+                      text: 'text-red-400',
+                      badgeBg: 'bg-red-500/20'
+                    },
+                    'slate': {
+                      bg: 'bg-slate-500/20',
+                      border: 'border-slate-500/50',
+                      text: 'text-slate-400',
+                      badgeBg: 'bg-slate-500/20'
+                    }
+                  };
 
-                const classes = colorClasses[color] || colorClasses['slate'];
+                  const classes = colorClasses[color] || colorClasses['slate'];
 
-                return (
-                  <div
-                    key={index}
-                    className="bg-slate-800/30 rounded px-2.5 py-1.5 border border-slate-700/50 hover:border-purple-500/30 transition-all"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className={`w-6 h-6 rounded flex items-center justify-center border flex-shrink-0 ${classes.bg} ${classes.border}`}>
-                        <Icon className={`w-3.5 h-3.5 ${classes.text}`} />
+                  return (
+                    <div
+                      key={index}
+                      className="bg-slate-800/30 rounded px-2.5 py-1.5 border border-slate-700/50 hover:border-purple-500/30 transition-all"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={`w-6 h-6 rounded flex items-center justify-center border flex-shrink-0 ${classes.bg} ${classes.border}`}>
+                          <Icon className={`w-3.5 h-3.5 ${classes.text}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white text-xs font-medium truncate">{agent.name}</div>
+                        </div>
+                        <Badge className={`text-xs px-1.5 py-0.5 h-auto flex-shrink-0 border font-medium ${classes.badgeBg} ${classes.text} ${classes.border}`}>
+                          {agent.weight}
+                        </Badge>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-white text-xs font-medium truncate">{agent.name}</div>
-                      </div>
-                      <Badge className={`text-xs px-1.5 py-0.5 h-auto flex-shrink-0 border font-medium ${classes.badgeBg} ${classes.text} ${classes.border}`}>
-                        {agent.weight}
-                      </Badge>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </CardContent>
       </Card>
 
@@ -389,7 +545,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
           <div className="flex items-center justify-between">
             <CardTitle className="text-white text-sm flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-purple-400" />
-              Performance vs Benchmarks
+              Account Value History (7 Days)
             </CardTitle>
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1">
@@ -399,16 +555,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                   onCheckedChange={(checked) => setShowBTC(checked as boolean)}
                   className="w-3 h-3 data-[state=checked]:bg-amber-500 data-[state=checked]:border-amber-500"
                 />
-                <label htmlFor="showBTC" className="text-xs text-slate-400 cursor-pointer">BTC</label>
-              </div>
-              <div className="flex items-center gap-1">
-                <Checkbox
-                  id="showETH"
-                  checked={showETH}
-                  onCheckedChange={(checked) => setShowETH(checked as boolean)}
-                  className="w-3 h-3 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500"
-                />
-                <label htmlFor="showETH" className="text-xs text-slate-400 cursor-pointer">ETH</label>
+                <label htmlFor="showBTC" className="text-xs text-slate-400 cursor-pointer">BTC Baseline</label>
               </div>
             </div>
           </div>
@@ -427,6 +574,12 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                 stroke="#64748b"
                 style={{ fontSize: "10px" }}
                 tick={{ fill: "#64748b" }}
+                domain={calculateYAxisDomain(performanceData)}
+                tickFormatter={(value) => {
+                  if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`;
+                  if (value >= 1000) return `$${(value / 1000).toFixed(1)}K`;
+                  return `$${value}`;
+                }}
               />
               <Tooltip
                 contentStyle={{
@@ -436,6 +589,8 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                   fontSize: "11px",
                 }}
                 labelStyle={{ color: "#cbd5e1" }}
+                labelFormatter={(label) => label}
+                formatter={(value: number) => `$${value.toLocaleString()}`}
               />
               <Legend
                 wrapperStyle={{ fontSize: "11px" }}
@@ -447,7 +602,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                 stroke="#8B5CF6"
                 strokeWidth={2.5}
                 dot={false}
-                name="Squad"
+                name="Portfolio Value"
               />
               {showBTC && (
                 <Line
@@ -456,18 +611,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                   stroke="#F59E0B"
                   strokeWidth={2}
                   dot={false}
-                  name="BTC"
-                  strokeDasharray="5 5"
-                />
-              )}
-              {showETH && (
-                <Line
-                  type="monotone"
-                  dataKey="eth"
-                  stroke="#10B981"
-                  strokeWidth={2}
-                  dot={false}
-                  name="ETH"
+                  name="BTC Baseline"
                   strokeDasharray="5 5"
                 />
               )}
@@ -560,53 +704,6 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                   </div>
                 );
               })}
-              {/* Total Summary */}
-              <div className="bg-purple-900/20 rounded p-2.5 border border-purple-500/30 mt-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-xs text-slate-400 mb-0.5">Portfolio Summary</div>
-                    <div className="flex items-center gap-3">
-                      <div>
-                        <span className="text-xs text-slate-500">Cash: </span>
-                        <span className="text-white text-xs font-medium">
-                          ${strategy.current_balance.toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2
-                          })}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-xs text-slate-500">Total Unrealized P&L: </span>
-                        <span className={`text-xs font-semibold ${
-                          (() => {
-                            // 计算总的未实现盈亏（使用实时价格）
-                            const totalUnrealizedPnl = strategy.holdings.reduce((sum, holding) => {
-                              const currentPrice = livePrices[holding.symbol] || holding.current_price;
-                              const marketValue = holding.amount * currentPrice;
-                              const unrealizedPnl = marketValue - holding.cost_basis;
-                              return sum + unrealizedPnl;
-                            }, 0);
-                            return totalUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
-                          })()
-                        }`}>
-                          {(() => {
-                            const totalUnrealizedPnl = strategy.holdings.reduce((sum, holding) => {
-                              const currentPrice = livePrices[holding.symbol] || holding.current_price;
-                              const marketValue = holding.amount * currentPrice;
-                              const unrealizedPnl = marketValue - holding.cost_basis;
-                              return sum + unrealizedPnl;
-                            }, 0);
-                            return `${totalUnrealizedPnl >= 0 ? '+' : ''}$${totalUnrealizedPnl.toLocaleString(undefined, {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2
-                            })}`;
-                          })()}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
             </div>
           )}
         </CardContent>
@@ -649,23 +746,46 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
       {/* Recent Squad Actions */}
       <Card className="bg-slate-900/50 border-slate-700/50 backdrop-blur-sm">
         <CardHeader className="pb-0 pt-3 px-3">
-          <CardTitle className="text-white text-sm flex items-center gap-2">
-            <Activity className="w-4 h-4 text-purple-400" />
-            Recent Squad Actions
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-white text-sm flex items-center gap-2">
+              <Activity className="w-4 h-4 text-purple-400" />
+              Recent Squad Actions
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setExecutionHistoryOpen(true)}
+              className="h-7 px-3 text-xs bg-purple-500/10 border-purple-500/50 text-purple-400 hover:bg-purple-500/20"
+            >
+              View All
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="px-3 pb-3 pt-0">
           <div className="space-y-1.5">
             {strategy.recent_activities.map((activity, index) => (
               <div
                 key={index}
-                className="flex items-center justify-between p-2 bg-slate-800/30 rounded border border-slate-700/50 hover:border-purple-500/50 transition-all"
+                className={`flex items-center justify-between p-2 rounded border transition-all ${
+                  activity.status === 'failed'
+                    ? 'bg-red-900/20 border-red-500/50 hover:border-red-500/70'
+                    : 'bg-slate-800/30 border-slate-700/50 hover:border-purple-500/50'
+                }`}
               >
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-0.5">
-                    <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50 text-xs px-1.5 py-0 h-4">
+                    <Badge className={`text-xs px-1.5 py-0 h-4 ${
+                      activity.status === 'failed'
+                        ? 'bg-red-500/20 text-red-400 border-red-500/50'
+                        : 'bg-purple-500/20 text-purple-400 border-purple-500/50'
+                    }`}>
                       {activity.agent}
                     </Badge>
+                    {activity.status === 'failed' && (
+                      <Badge className="bg-red-500/30 text-red-300 border-red-500/60 text-xs px-1.5 py-0 h-4">
+                        ERROR
+                      </Badge>
+                    )}
                     <span className="text-xs text-slate-500">
                       {new Date(activity.date).toLocaleString(undefined, {
                         year: 'numeric',
@@ -676,19 +796,94 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
                       })}
                     </span>
                   </div>
-                  <div className="text-white text-xs mb-0.5">
-                    Signal: <span className="text-slate-300">{activity.signal}</span>
-                  </div>
-                  <div className="text-xs text-slate-400">Action: {activity.action}</div>
+
+                  {/* 显示错误信息或正常信号 */}
+                  {activity.status === 'failed' && activity.error_details ? (
+                    <div className="text-xs mb-0.5">
+                      <div className="text-red-400 font-medium mb-1">
+                        Agent工作错误
+                      </div>
+                      <div className="text-red-300/80 text-xs">
+                        失败的Agent: <span className="font-medium">{activity.error_details.failed_agent || 'multiple'}</span>
+                      </div>
+                      <div className="text-red-300/70 text-xs mt-0.5">
+                        {activity.error_details.error_message}
+                      </div>
+                      {activity.error_details.retry_count && activity.error_details.retry_count > 0 && (
+                        <div className="text-red-300/60 text-xs mt-0.5">
+                          重试次数: {activity.error_details.retry_count}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-white text-xs mb-0.5">
+                      {activity.signal === 'HOLD' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/50 font-medium">
+                          HOLD
+                        </span>
+                      ) : activity.signal === 'BUY' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 font-medium">
+                          BUY
+                        </span>
+                      ) : activity.signal === 'SELL' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/50 font-medium">
+                          SELL
+                        </span>
+                      ) : (
+                        <>Signal: <span className="text-slate-300">{activity.signal}</span></>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Agent Contributions - 只在成功时显示 */}
+                  {activity.status !== 'failed' && activity.agent_contributions && activity.agent_contributions.length > 0 && (
+                    <div className="mt-1.5 space-y-1">
+                      {activity.agent_contributions.map((agent, idx) => (
+                        <div key={idx} className="flex items-center gap-2 text-xs bg-slate-900/50 rounded px-2 py-1 border border-slate-700/30">
+                          <span className="text-purple-400 font-medium w-28">{agent.display_name}</span>
+                          <span className={`px-1.5 py-0.5 rounded font-medium ${
+                            agent.signal === 'BULLISH' ? 'bg-emerald-500/20 text-emerald-400' :
+                            agent.signal === 'BEARISH' ? 'bg-red-500/20 text-red-400' :
+                            'bg-slate-500/20 text-slate-400'
+                          }`}>
+                            {agent.signal}
+                          </span>
+                          <span className="text-slate-400">
+                            Confidence: <span className="text-white">{(agent.confidence * 100).toFixed(0)}%</span>
+                          </span>
+                          <span className="text-slate-400">
+                            Score: <span className={`font-medium ${
+                              agent.score > 0 ? 'text-emerald-400' :
+                              agent.score < 0 ? 'text-red-400' :
+                              'text-slate-400'
+                            }`}>{agent.score > 0 ? '+' : ''}{agent.score.toFixed(1)}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <div
-                    className={`text-sm font-mono font-semibold ${
-                      activity.result.startsWith("+") ? "text-emerald-400" : "text-red-400"
-                    }`}
-                  >
-                    {activity.result}
-                  </div>
+                  {activity.consecutive_count !== null && activity.consecutive_count !== undefined && activity.consecutive_count > 0 && (
+                    <div className={`px-1.5 py-0.5 rounded text-xs font-medium border ${
+                      activity.signal === 'BUY'
+                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'  // 看涨：绿色
+                        : activity.signal === 'SELL'
+                        ? 'bg-red-500/20 text-red-400 border-red-500/50'  // 看跌：红色
+                        : 'bg-blue-500/20 text-blue-400 border-blue-500/50'  // 默认：蓝色
+                    }`}>
+                      {activity.consecutive_count}x
+                    </div>
+                  )}
+                  {activity.conviction_score !== null && activity.conviction_score !== undefined && (
+                    <div className={`text-sm font-medium ${
+                      activity.conviction_score < 30 ? 'text-orange-500' :
+                      activity.conviction_score > 70 ? 'text-emerald-400' :
+                      'text-purple-400'
+                    }`}>
+                      {activity.conviction_score.toFixed(1)}%
+                    </div>
+                  )}
                   {activity.execution_id && (
                     <Button
                       size="sm"
@@ -704,6 +899,105 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
               </div>
             ))}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Trade History */}
+      <Card className="bg-slate-900/50 border-slate-700/50 backdrop-blur-sm">
+        <CardHeader className="pb-0 pt-3 px-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-white text-sm flex items-center gap-2">
+              <DollarSign className="w-4 h-4 text-emerald-400" />
+              Recent Trades
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setTradeHistoryOpen(true)}
+              className="h-7 px-3 text-xs bg-emerald-500/10 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/20"
+            >
+              View All
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="px-3 pb-3 pt-0">
+          {recentTrades.length === 0 ? (
+            <div className="text-center text-slate-400 text-xs py-4">
+              No trades yet
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {recentTrades.map((trade) => (
+                <div
+                  key={trade.id}
+                  className="bg-slate-800/30 border border-slate-700/50 rounded p-2 hover:border-emerald-500/50 transition-all"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Badge className={`text-xs px-1.5 py-0 h-4 ${
+                        trade.trade_type === 'BUY'
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'
+                          : 'bg-red-500/20 text-red-400 border-red-500/50'
+                      }`}>
+                        {trade.trade_type} {trade.symbol}
+                      </Badge>
+                      <span className="text-xs text-slate-500">
+                        {new Date(trade.executed_at).toLocaleString(undefined, {
+                          year: 'numeric',
+                          month: 'numeric',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </span>
+                    </div>
+                    {trade.conviction_score !== null && (
+                      <span className="text-xs text-slate-400">
+                        {trade.conviction_score.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-xs text-slate-500">Amount</div>
+                      <div className="text-white text-xs font-medium">
+                        {Number(trade.amount).toFixed(8)} {trade.symbol}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">Price</div>
+                      <div className="text-white text-xs font-medium">
+                        ${Number(trade.price).toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">Total Value</div>
+                      <div className="text-white text-xs font-medium">
+                        ${Number(trade.total_value).toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </div>
+                    </div>
+                    {trade.trade_type === 'SELL' && trade.realized_pnl !== null && (
+                      <div>
+                        <div className="text-xs text-slate-500">PnL</div>
+                        <div className={`text-xs font-medium ${
+                          Number(trade.realized_pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                        }`}>
+                          {Number(trade.realized_pnl) >= 0 ? '+' : ''}${Number(trade.realized_pnl).toFixed(2)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -733,6 +1027,25 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
       <ExecutionDetailsModal
         executionId={selectedExecutionId}
         onClose={() => setSelectedExecutionId(null)}
+      />
+
+      {/* Execution History Modal */}
+      <ExecutionHistoryModal
+        isOpen={executionHistoryOpen}
+        onClose={() => setExecutionHistoryOpen(false)}
+        strategyId={strategyId}
+        strategyName={strategy.name}
+        onViewDetail={(executionId) => {
+          setExecutionHistoryOpen(false);
+          setSelectedExecutionId(executionId);
+        }}
+      />
+
+      {/* Trade History Modal */}
+      <TradeHistoryModal
+        isOpen={tradeHistoryOpen}
+        onClose={() => setTradeHistoryOpen(false)}
+        portfolioId={strategyId}
       />
     </div>
   );

@@ -1,6 +1,6 @@
 """Admin API Schemas"""
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 from app.schemas.base import UTCAwareBaseModel
 
@@ -17,6 +17,10 @@ class AdminStrategyItem(BaseModel):
     total_pnl: float = Field(..., description="总盈亏")
     total_pnl_percent: float = Field(..., description="总盈亏百分比")
     rebalance_period_minutes: int = Field(..., description="策略执行周期（分钟）")
+    agent_weights: Optional[Dict[str, float]] = Field(None, description="Agent权重配置")
+    consecutive_signal_threshold: Optional[int] = Field(None, description="连续信号阈值")
+    acceleration_multiplier_min: Optional[float] = Field(None, description="加速乘数最小值")
+    acceleration_multiplier_max: Optional[float] = Field(None, description="加速乘数最大值")
     created_at: str = Field(..., description="创建时间")
     updated_at: Optional[str] = Field(None, description="更新时间")
 

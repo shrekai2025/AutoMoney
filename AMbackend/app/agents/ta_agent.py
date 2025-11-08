@@ -61,6 +61,7 @@ The JSON must match this exact structure with these exact field names:
 {
     "signal": "BULLISH",
     "confidence": 0.75,
+    "score": 72.5,
     "reasoning": "Detailed explanation of your technical analysis...",
     "technical_indicators": {
         "ema": {
@@ -107,21 +108,41 @@ The JSON must match this exact structure with these exact field names:
 CRITICAL REQUIREMENTS:
 - "signal" MUST be one of: "BULLISH", "BEARISH", or "NEUTRAL" (no other values)
 - "confidence" MUST be a decimal between 0.0 and 1.0 (NOT a percentage like 72, use 0.72 instead)
+- "score" MUST be a number between -100.0 and 100.0 representing investment conviction:
+  * -100 to -60: Strong bearish (recommend selling/shorting)
+  * -60 to -20: Moderate bearish (reduce exposure)
+  * -20 to +20: Neutral (hold current position)
+  * +20 to +60: Moderate bullish (accumulate gradually)
+  * +60 to +100: Strong bullish (aggressive buying)
 - "technical_indicators" is the exact field name
 - All field names must match exactly as shown above
 - "support_levels" and "resistance_levels" must be arrays of numbers (floats)
 - "key_patterns" must be an array of strings
 
+🎯 UNDERSTAND THE DIFFERENCE:
+- **confidence** (0-1): Your subjective certainty about this analysis. How reliable is your reading of the data?
+- **score** (-100 to +100): Objective investment recommendation. How much should investors buy or sell?
+
+Example:
+- "I'm 80% confident (confidence=0.8) that the market is moderately bullish (score=+45)"
+- "I'm only 50% confident (confidence=0.5) due to mixed signals, but the bullish signals are stronger (score=+30)"
+
 Be objective, data-driven, and consider:
-- Confluence of multiple indicators (more aligned = higher confidence)
+- Confluence of multiple indicators (more aligned = higher score magnitude)
 - Strength of each signal
 - Current price action and momentum
 - Risk/reward at current levels
 
-Your confidence score should reflect:
-- Alignment of indicators (all pointing same direction = higher confidence)
-- Clarity of the trend or setup
-- Confirmation from multiple timeframes/indicators
+Your score calculation should reflect:
+- Alignment of indicators (all pointing same direction = higher |score|)
+- Strength of trend (strong trend = higher |score|, weak trend = closer to 0)
+- Confirmation from multiple indicators
+- Current risk/reward ratio
+
+Your confidence should reflect:
+- Data quality and completeness
+- Clarity of signals (mixed signals = lower confidence)
+- Market volatility and uncertainty
 
 ⚠️ FINAL REMINDER: Respond with ONLY the JSON object. NO MARKDOWN formatting in string values. Start with { and end with }.
 """
@@ -175,6 +196,7 @@ Your confidence score should reflect:
             agent_name=self.agent_name,
             signal=SignalType(analysis["signal"]),
             confidence=float(analysis["confidence"]),
+            score=float(analysis["score"]),
             confidence_level=AgentOutput.get_confidence_level(
                 float(analysis["confidence"])
             ),
@@ -291,6 +313,7 @@ Return your analysis in the specified JSON format."""
             required_fields = [
                 "signal",
                 "confidence",
+                "score",
                 "reasoning",
                 "technical_indicators",
                 "support_levels",
@@ -310,6 +333,11 @@ Return your analysis in the specified JSON format."""
             if not 0.0 <= confidence <= 1.0:
                 raise ValueError(f"Confidence must be between 0 and 1: {confidence}")
 
+            # Validate score range
+            score = float(analysis["score"])
+            if not -100.0 <= score <= 100.0:
+                raise ValueError(f"Score must be between -100 and 100: {score}")
+
             # Validate support/resistance are lists
             if not isinstance(analysis["support_levels"], list):
                 raise ValueError("support_levels must be a list")
@@ -326,6 +354,7 @@ Return your analysis in the specified JSON format."""
             return {
                 "signal": "NEUTRAL",
                 "confidence": 0.3,
+                "score": 0.0,
                 "reasoning": f"Unable to parse LLM response properly. Error: {str(e)}. Raw response available in logs.",
                 "technical_indicators": {},
                 "support_levels": [],

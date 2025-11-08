@@ -1,17 +1,7 @@
 import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
-import { Badge } from "./ui/badge";
-import { Alert, AlertDescription } from "./ui/alert";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "./ui/table";
 import { Shield, Users, TrendingUp, TrendingDown, AlertCircle, Lock, Settings } from "lucide-react";
+import styles from './AdminPanel.module.css';
 import {
   Dialog,
   DialogContent,
@@ -22,8 +12,12 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { fetchAllStrategies, toggleStrategy } from "../lib/adminApi";
 import { updateStrategySettings } from "../lib/marketplaceApi";
+import { AgentWeightConfigurator, type AgentWeights } from "./AgentWeightConfigurator";
+import { ConsecutiveSignalConfigurator, type ConsecutiveSignalConfig } from "./ConsecutiveSignalConfigurator";
+import { TradingThresholdsConfigurator, type TradingThresholds } from "./TradingThresholdsConfigurator";
 import type { AdminStrategy } from "../lib/adminApi";
 
 export function AdminPanel() {
@@ -36,6 +30,19 @@ export function AdminPanel() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedStrategy, setSelectedStrategy] = useState<AdminStrategy | null>(null);
   const [rebalancePeriod, setRebalancePeriod] = useState<string>("");
+  const [agentWeights, setAgentWeights] = useState<AgentWeights>({ macro: 40, onchain: 40, ta: 20 });
+  const [consecutiveSignalConfig, setConsecutiveSignalConfig] = useState<ConsecutiveSignalConfig>({
+    consecutiveSignalThreshold: 30,
+    accelerationMultiplierMin: 1.1,
+    accelerationMultiplierMax: 2.0,
+  });
+  const [tradingThresholds, setTradingThresholds] = useState<TradingThresholds>({
+    fgCircuitBreakerThreshold: 20,
+    fgPositionAdjustThreshold: 30,
+    buyThreshold: 50,
+    partialSellThreshold: 50,
+    fullSellThreshold: 45,
+  });
   const [settingsSaving, setSettingsSaving] = useState(false);
 
   // Load all strategies
@@ -85,6 +92,55 @@ export function AdminPanel() {
     // Get current rebalance_period_minutes from strategy, default to 10 if not set
     const currentPeriod = strategy.rebalance_period_minutes || 10;
     setRebalancePeriod(currentPeriod.toString());
+
+    // Parse agent_weights from strategy (if exists), convert from 0-1 to 0-100 percentage
+    if (strategy.agent_weights) {
+      setAgentWeights({
+        macro: (strategy.agent_weights.macro || 0.4) * 100,
+        onchain: (strategy.agent_weights.onchain || 0.4) * 100,
+        ta: (strategy.agent_weights.ta || 0.2) * 100,
+      });
+    } else {
+      // Use default weights
+      setAgentWeights({ macro: 40, onchain: 40, ta: 20 });
+    }
+
+    // Parse consecutive signal config from strategy (if exists)
+    if ((strategy as any).consecutive_signal_threshold !== undefined) {
+      setConsecutiveSignalConfig({
+        consecutiveSignalThreshold: (strategy as any).consecutive_signal_threshold || 30,
+        accelerationMultiplierMin: (strategy as any).acceleration_multiplier_min || 1.1,
+        accelerationMultiplierMax: (strategy as any).acceleration_multiplier_max || 2.0,
+      });
+    } else {
+      // Use default config
+      setConsecutiveSignalConfig({
+        consecutiveSignalThreshold: 30,
+        accelerationMultiplierMin: 1.1,
+        accelerationMultiplierMax: 2.0,
+      });
+    }
+
+    // Parse trading thresholds from strategy (if exists)
+    if ((strategy as any).fg_circuit_breaker_threshold !== undefined) {
+      setTradingThresholds({
+        fgCircuitBreakerThreshold: (strategy as any).fg_circuit_breaker_threshold || 20,
+        fgPositionAdjustThreshold: (strategy as any).fg_position_adjust_threshold || 30,
+        buyThreshold: (strategy as any).buy_threshold || 50,
+        partialSellThreshold: (strategy as any).partial_sell_threshold || 50,
+        fullSellThreshold: (strategy as any).full_sell_threshold || 45,
+      });
+    } else {
+      // Use default thresholds
+      setTradingThresholds({
+        fgCircuitBreakerThreshold: 20,
+        fgPositionAdjustThreshold: 30,
+        buyThreshold: 50,
+        partialSellThreshold: 50,
+        fullSellThreshold: 45,
+      });
+    }
+
     setSettingsOpen(true);
   }
 
@@ -97,15 +153,90 @@ export function AdminPanel() {
       return;
     }
 
+    // Validate agent weights total
+    const totalWeight = agentWeights.macro + agentWeights.onchain + agentWeights.ta;
+    if (Math.abs(totalWeight - 100) > 0.1) {
+      alert('Agent weights must sum to 100%');
+      return;
+    }
+
+    // Validate consecutive signal config
+    if (
+      consecutiveSignalConfig.consecutiveSignalThreshold < 1 ||
+      consecutiveSignalConfig.consecutiveSignalThreshold > 1000
+    ) {
+      alert('Consecutive signal threshold must be between 1 and 1000');
+      return;
+    }
+
+    if (
+      consecutiveSignalConfig.accelerationMultiplierMin < 1.0 ||
+      consecutiveSignalConfig.accelerationMultiplierMin > consecutiveSignalConfig.accelerationMultiplierMax ||
+      consecutiveSignalConfig.accelerationMultiplierMax > 5.0
+    ) {
+      alert('Invalid multiplier range. Min must be ≥1.0, Max must be ≤5.0, and Min ≤ Max');
+      return;
+    }
+
+    // Validate trading thresholds
+    if (
+      tradingThresholds.fgCircuitBreakerThreshold < 0 ||
+      tradingThresholds.fgCircuitBreakerThreshold > 100 ||
+      tradingThresholds.fgPositionAdjustThreshold < 0 ||
+      tradingThresholds.fgPositionAdjustThreshold > 100
+    ) {
+      alert('Fear & Greed thresholds must be between 0 and 100');
+      return;
+    }
+
+    if (
+      tradingThresholds.buyThreshold < 0 ||
+      tradingThresholds.buyThreshold > 100 ||
+      tradingThresholds.partialSellThreshold < 0 ||
+      tradingThresholds.partialSellThreshold > 100 ||
+      tradingThresholds.fullSellThreshold < 0 ||
+      tradingThresholds.fullSellThreshold > 100
+    ) {
+      alert('Conviction score thresholds must be between 0 and 100');
+      return;
+    }
+
+    // Validate threshold logic: fullSell <= partialSell <= buy
+    if (tradingThresholds.fullSellThreshold > tradingThresholds.partialSellThreshold) {
+      alert('Full Sell threshold must be ≤ Partial Sell threshold');
+      return;
+    }
+
     try {
       setSettingsSaving(true);
-      await updateStrategySettings(selectedStrategy.id, periodMinutes);
+      await updateStrategySettings(selectedStrategy.id, {
+        rebalancePeriodMinutes: periodMinutes,
+        agentWeights: agentWeights,
+        consecutiveSignalConfig: consecutiveSignalConfig,
+        tradingThresholds: tradingThresholds,
+      });
 
-      // Update local state
+      // Update local state - convert weights back to 0-1 range for storage
       setStrategies(prev =>
         prev.map(s =>
           s.id === selectedStrategy.id
-            ? { ...s, rebalance_period_minutes: periodMinutes } as AdminStrategy
+            ? {
+                ...s,
+                rebalance_period_minutes: periodMinutes,
+                agent_weights: {
+                  macro: agentWeights.macro / 100,
+                  onchain: agentWeights.onchain / 100,
+                  ta: agentWeights.ta / 100,
+                },
+                consecutive_signal_threshold: consecutiveSignalConfig.consecutiveSignalThreshold,
+                acceleration_multiplier_min: consecutiveSignalConfig.accelerationMultiplierMin,
+                acceleration_multiplier_max: consecutiveSignalConfig.accelerationMultiplierMax,
+                fg_circuit_breaker_threshold: tradingThresholds.fgCircuitBreakerThreshold,
+                fg_position_adjust_threshold: tradingThresholds.fgPositionAdjustThreshold,
+                buy_threshold: tradingThresholds.buyThreshold,
+                partial_sell_threshold: tradingThresholds.partialSellThreshold,
+                full_sell_threshold: tradingThresholds.fullSellThreshold,
+              } as AdminStrategy
             : s
         )
       );
@@ -113,9 +244,26 @@ export function AdminPanel() {
       setSettingsOpen(false);
       alert('Strategy settings updated successfully!');
     } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to update settings';
+      let errorMessage = 'Failed to update settings';
+      
+      // 尝试从多个来源提取错误信息
+      if (err.response?.data?.detail) {
+        errorMessage = typeof err.response.data.detail === 'string' 
+          ? err.response.data.detail 
+          : JSON.stringify(err.response.data.detail);
+      } else if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+      
       alert(`Error: ${errorMessage}`);
       console.error('Failed to update settings:', err);
+      console.error('Error details:', {
+        response: err.response,
+        message: err.message,
+        data: err.response?.data
+      });
     } finally {
       setSettingsSaving(false);
     }
@@ -138,26 +286,31 @@ export function AdminPanel() {
     const isPermissionError = error.includes('403') || error.toLowerCase().includes('admin');
 
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Card className="bg-slate-900/50 border-red-500/50 max-w-md">
-          <CardContent className="p-6 text-center">
-            <Lock className="w-16 h-16 text-red-400 mx-auto mb-4" />
-            <h2 className="text-xl font-bold text-white mb-2">
-              {isPermissionError ? 'Access Denied' : 'Error'}
-            </h2>
-            <p className="text-slate-400 mb-4">
-              {isPermissionError
-                ? 'You do not have administrator privileges to access this page.'
-                : error}
-            </p>
-            <Button
-              onClick={loadStrategies}
-              className="bg-purple-600 hover:bg-purple-700"
-            >
-              Try Again
-            </Button>
-          </CardContent>
-        </Card>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '400px' }}>
+        <div style={{
+          background: 'rgba(15, 23, 42, 0.5)',
+          border: '1px solid rgba(239, 68, 68, 0.5)',
+          borderRadius: '12px',
+          maxWidth: '448px',
+          padding: '24px',
+          textAlign: 'center'
+        }}>
+          <Lock style={{ width: '64px', height: '64px', color: '#f87171', margin: '0 auto 16px' }} />
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: 'white', marginBottom: '8px' }}>
+            {isPermissionError ? 'Access Denied' : 'Error'}
+          </h2>
+          <p style={{ color: '#94a3b8', marginBottom: '16px' }}>
+            {isPermissionError
+              ? 'You do not have administrator privileges to access this page.'
+              : error}
+          </p>
+          <Button
+            onClick={loadStrategies}
+            className="bg-purple-600 hover:bg-purple-700"
+          >
+            Try Again
+          </Button>
+        </div>
       </div>
     );
   }
@@ -169,15 +322,15 @@ export function AdminPanel() {
   const totalPnL = strategies.reduce((sum, s) => sum + s.total_pnl, 0);
 
   return (
-    <div className="space-y-4 p-4">
+    <div className={styles.container}>
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className={styles.header}>
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <h1 className={styles.headerTitle}>
             <Shield className="w-6 h-6 text-purple-400" />
             Admin Panel
           </h1>
-          <p className="text-slate-400 text-sm mt-1">
+          <p className={styles.headerSubtitle}>
             Manage all strategies across all users
           </p>
         </div>
@@ -191,190 +344,163 @@ export function AdminPanel() {
       </div>
 
       {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <Card className="bg-slate-900/50 border-slate-700/50">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Total Strategies</p>
-                <p className="text-2xl font-bold text-white">{totalStrategies}</p>
-              </div>
-              <Users className="w-8 h-8 text-purple-400" />
+      <div className={styles.statsContainer}>
+        <div className={styles.statCard}>
+          <div className={styles.statContent}>
+            <Users className={`${styles.statIcon} text-purple-400`} />
+            <div>
+              <p className={styles.statLabel}>Total Strategies</p>
+              <p className={`${styles.statValue} text-white`}>{totalStrategies}</p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card className="bg-slate-900/50 border-slate-700/50">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Active Strategies</p>
-                <p className="text-2xl font-bold text-emerald-400">{activeStrategies}</p>
-              </div>
-              <TrendingUp className="w-8 h-8 text-emerald-400" />
+        <div className={styles.statCard}>
+          <div className={styles.statContent}>
+            <TrendingUp className={`${styles.statIcon} text-emerald-400`} />
+            <div>
+              <p className={styles.statLabel}>Active</p>
+              <p className={`${styles.statValue} text-emerald-400`}>{activeStrategies}</p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card className="bg-slate-900/50 border-slate-700/50">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Total Value</p>
-                <p className="text-2xl font-bold text-white">
-                  ${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </p>
-              </div>
-              <TrendingUp className="w-8 h-8 text-blue-400" />
+        <div className={styles.statCard}>
+          <div className={styles.statContent}>
+            <TrendingUp className={`${styles.statIcon} text-blue-400`} />
+            <div>
+              <p className={styles.statLabel}>Total Value</p>
+              <p className={`${styles.statValue} text-white`}>
+                ${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card className="bg-slate-900/50 border-slate-700/50">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Total P&L</p>
-                <p className={`text-2xl font-bold ${totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {totalPnL >= 0 ? '+' : ''}${totalPnL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </p>
-              </div>
-              {totalPnL >= 0 ? (
-                <TrendingUp className="w-8 h-8 text-emerald-400" />
-              ) : (
-                <TrendingDown className="w-8 h-8 text-red-400" />
-              )}
+        <div className={styles.statCard}>
+          <div className={styles.statContent}>
+            {totalPnL >= 0 ? (
+              <TrendingUp className={`${styles.statIcon} text-emerald-400`} />
+            ) : (
+              <TrendingDown className={`${styles.statIcon} text-red-400`} />
+            )}
+            <div>
+              <p className={styles.statLabel}>Total P&L</p>
+              <p className={`${styles.statValue} ${totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {totalPnL >= 0 ? '+' : ''}${totalPnL.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
 
       {/* Strategy List */}
-      <Card className="bg-slate-900/50 border-slate-700/50">
-        <CardHeader>
-          <CardTitle className="text-white text-lg">All Strategies</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {strategies.length === 0 ? (
-            <Alert className="bg-slate-800/50 border-slate-700">
-              <AlertCircle className="h-4 w-4 text-slate-400" />
-              <AlertDescription className="text-slate-400">
+      <div className={styles.tableCard}>
+        <div className={styles.tableHeader}>
+          <h2 className={styles.tableTitle}>All Strategies</h2>
+        </div>
+        {strategies.length === 0 ? (
+          <div className={styles.emptyState}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '16px',
+              background: 'rgba(30, 41, 59, 0.5)',
+              border: '1px solid #334155',
+              borderRadius: '8px'
+            }}>
+              <AlertCircle style={{ width: '16px', height: '16px', color: '#94a3b8' }} />
+              <span style={{ color: '#94a3b8', fontSize: '14px' }}>
                 No strategies found in the system.
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-slate-700 hover:bg-slate-800/50">
-                    <TableHead className="text-slate-400">Strategy Name</TableHead>
-                    <TableHead className="text-slate-400">User ID</TableHead>
-                    <TableHead className="text-slate-400">Type</TableHead>
-                    <TableHead className="text-slate-400">Status</TableHead>
-                    <TableHead className="text-slate-400 text-right">Total Value</TableHead>
-                    <TableHead className="text-slate-400 text-right">P&L</TableHead>
-                    <TableHead className="text-slate-400 text-right">P&L %</TableHead>
-                    <TableHead className="text-slate-400 text-center">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {strategies.map((strategy) => (
-                    <TableRow
-                      key={strategy.id}
-                      className="border-slate-700 hover:bg-slate-800/30"
-                    >
-                      <TableCell className="text-white font-medium">
-                        {strategy.name}
-                      </TableCell>
-                      <TableCell className="text-slate-300">
-                        {strategy.user_id}
-                      </TableCell>
-                      <TableCell>
-                        <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50">
-                          {strategy.strategy_name}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          className={
-                            strategy.is_active
-                              ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50"
-                              : "bg-slate-500/20 text-slate-400 border-slate-500/50"
-                          }
-                        >
-                          {strategy.is_active ? "Active" : "Inactive"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right text-white">
-                        ${strategy.total_value.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </TableCell>
-                      <TableCell
-                        className={`text-right font-medium ${
-                          strategy.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'
-                        }`}
-                      >
-                        {strategy.total_pnl >= 0 ? '+' : ''}${strategy.total_pnl.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </TableCell>
-                      <TableCell
-                        className={`text-right font-medium ${
-                          strategy.total_pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400'
-                        }`}
-                      >
-                        {strategy.total_pnl_percent >= 0 ? '+' : ''}{strategy.total_pnl_percent.toFixed(2)}%
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <div className="flex gap-2 justify-center">
-                          <Button
-                            onClick={() => handleOpenSettings(strategy)}
-                            size="sm"
-                            variant="outline"
-                            className="min-w-[90px] h-8 text-xs font-medium bg-slate-700/50 border-slate-600 text-slate-300 hover:bg-slate-700"
-                          >
-                            <Settings className="w-3 h-3 mr-1" />
-                            Settings
-                          </Button>
-                          <Button
-                            onClick={() => handleToggle(strategy.id, strategy.is_active)}
-                            disabled={toggleLoading[strategy.id]}
-                            size="sm"
-                            variant="outline"
-                            className={`
-                              min-w-[100px] h-8 text-xs font-medium
-                              ${strategy.is_active
-                                ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400 hover:bg-emerald-600/30'
-                                : 'bg-slate-700/50 border-slate-600 text-slate-400 hover:bg-slate-700'
-                              }
-                            `}
-                          >
-                            {toggleLoading[strategy.id] ? (
-                              <span className="flex items-center gap-2">
-                                <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                                Updating...
-                              </span>
-                            ) : (
-                              strategy.is_active ? 'Deactivate' : 'Activate'
-                            )}
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              </span>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </div>
+        ) : (
+          <div className={styles.tableWrapper}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Strategy Name</th>
+                  <th>User ID</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th className={styles.alignRight}>Total Value</th>
+                  <th className={styles.alignRight}>P&L</th>
+                  <th className={styles.alignRight}>P&L %</th>
+                  <th className={styles.alignCenter}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {strategies.map((strategy) => (
+                  <tr key={strategy.id}>
+                    <td className={styles.strategyName}>
+                      {strategy.name}
+                    </td>
+                    <td className={styles.userId}>
+                      {strategy.user_id}
+                    </td>
+                    <td>
+                      <span className={`${styles.badge} ${styles.badgePurple}`}>
+                        {strategy.strategy_name}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`${styles.badge} ${strategy.is_active ? styles.badgeGreen : styles.badgeGray}`}>
+                        {strategy.is_active ? "Active" : "Inactive"}
+                      </span>
+                    </td>
+                    <td className={styles.alignRight} style={{ color: 'white' }}>
+                      ${strategy.total_value.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2
+                      })}
+                    </td>
+                    <td className={`${styles.alignRight} ${strategy.total_pnl >= 0 ? styles.valuePositive : styles.valueNegative}`}>
+                      {strategy.total_pnl >= 0 ? '+' : ''}${strategy.total_pnl.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2
+                      })}
+                    </td>
+                    <td className={`${styles.alignRight} ${strategy.total_pnl_percent >= 0 ? styles.valuePositive : styles.valueNegative}`}>
+                      {strategy.total_pnl_percent >= 0 ? '+' : ''}{strategy.total_pnl_percent.toFixed(2)}%
+                    </td>
+                    <td className={styles.alignCenter}>
+                      <div className={styles.actions}>
+                        <button
+                          onClick={() => handleOpenSettings(strategy)}
+                          className={`${styles.actionButton} ${styles.buttonSettings}`}
+                        >
+                          <Settings className={styles.buttonIcon} />
+                          Settings
+                        </button>
+                        <button
+                          onClick={() => handleToggle(strategy.id, strategy.is_active)}
+                          disabled={toggleLoading[strategy.id]}
+                          className={`${styles.actionButton} ${strategy.is_active ? styles.buttonDeactivate : styles.buttonActivate}`}
+                        >
+                          {toggleLoading[strategy.id] ? (
+                            <>
+                              <div className={styles.spinner} />
+                              Updating...
+                            </>
+                          ) : (
+                            strategy.is_active ? 'Deactivate' : 'Activate'
+                          )}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Settings Modal */}
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white max-w-2xl">
           <DialogHeader>
             <DialogTitle>Strategy Settings</DialogTitle>
             <DialogDescription className="text-slate-400">
@@ -382,26 +508,59 @@ export function AdminPanel() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="rebalance-period" className="text-sm font-medium text-slate-200">
-                Rebalance Period (minutes)
-              </Label>
-              <Input
-                id="rebalance-period"
-                type="number"
-                min="1"
-                max="1440"
-                value={rebalancePeriod}
-                onChange={(e) => setRebalancePeriod(e.target.value)}
-                className="bg-slate-800 border-slate-600 text-white"
-                placeholder="Enter period in minutes (1-1440)"
+          <Tabs defaultValue="period" className="w-full">
+            <TabsList className="flex flex-wrap w-full bg-slate-800 gap-1">
+              <TabsTrigger value="period" className="flex-1 min-w-[80px] text-xs text-slate-300 data-[state=active]:text-slate-900 data-[state=active]:bg-white">Period</TabsTrigger>
+              <TabsTrigger value="weights" className="flex-1 min-w-[80px] text-xs text-slate-300 data-[state=active]:text-slate-900 data-[state=active]:bg-white">Weights</TabsTrigger>
+              <TabsTrigger value="consecutive" className="flex-1 min-w-[80px] text-xs text-slate-300 data-[state=active]:text-slate-900 data-[state=active]:bg-white">Combo</TabsTrigger>
+              <TabsTrigger value="thresholds" className="flex-1 min-w-[80px] text-xs text-slate-300 data-[state=active]:text-slate-900 data-[state=active]:bg-white">Thresholds</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="period" className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="rebalance-period" className="text-sm font-medium text-slate-200">
+                  Rebalance Period (minutes)
+                </Label>
+                <Input
+                  id="rebalance-period"
+                  type="number"
+                  min="1"
+                  max="1440"
+                  value={rebalancePeriod}
+                  onChange={(e) => setRebalancePeriod(e.target.value)}
+                  className="bg-slate-800 border-slate-600 text-white"
+                  placeholder="Enter period in minutes (1-1440)"
+                />
+                <p className="text-xs text-slate-400">
+                  Allowed range: 1 minute to 1440 minutes (24 hours)
+                </p>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="weights" className="py-4">
+              <AgentWeightConfigurator
+                initialWeights={agentWeights}
+                onChange={setAgentWeights}
+                disabled={settingsSaving}
               />
-              <p className="text-xs text-slate-400">
-                Allowed range: 1 minute to 1440 minutes (24 hours)
-              </p>
-            </div>
-          </div>
+            </TabsContent>
+
+            <TabsContent value="consecutive" className="py-4">
+              <ConsecutiveSignalConfigurator
+                initialConfig={consecutiveSignalConfig}
+                onChange={setConsecutiveSignalConfig}
+                disabled={settingsSaving}
+              />
+            </TabsContent>
+
+            <TabsContent value="thresholds" className="py-4">
+              <TradingThresholdsConfigurator
+                initialThresholds={tradingThresholds}
+                onChange={setTradingThresholds}
+                disabled={settingsSaving}
+              />
+            </TabsContent>
+          </Tabs>
 
           <DialogFooter>
             <Button

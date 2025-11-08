@@ -5,10 +5,10 @@
 
 from typing import Optional, List
 from decimal import Decimal
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Portfolio, PortfolioHolding
+from app.models import Portfolio, PortfolioHolding, Trade
 from app.schemas.strategy import PortfolioCreate
 
 
@@ -97,8 +97,9 @@ class PortfolioService:
 
             holdings_value += holding.market_value
 
-        # 更新组合总价值
+        # 更新组合总价值和盈亏
         portfolio.total_value = portfolio.current_balance + holdings_value
+        # Total P&L = 当前总价值 - 初始资金（已包含所有手续费和盈亏）
         portfolio.total_pnl = portfolio.total_value - portfolio.initial_balance
         portfolio.total_pnl_percent = (
             float(portfolio.total_pnl / portfolio.initial_balance * 100)

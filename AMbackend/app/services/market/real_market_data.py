@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 
 from app.services.data_collectors.manager import data_manager
+from app.services.indicators.calculator import IndicatorCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,15 @@ class RealMarketDataService:
             fear_greed_data = snapshot.fear_greed
             macro_data = snapshot.macro
 
+            # 计算技术指标（为TAAgent准备）
+            indicators_dict = None
+            if snapshot.btc_ohlcv and len(snapshot.btc_ohlcv) > 0:
+                try:
+                    indicators_data = IndicatorCalculator.calculate_all(snapshot.btc_ohlcv)
+                    indicators_dict = indicators_data.get("indicators", {})
+                except Exception as ind_error:
+                    logger.warning(f"计算技术指标失败: {ind_error}")
+
             # 构建市场快照
             market_snapshot = {
                 # BTC 价格数据
@@ -61,6 +71,9 @@ class RealMarketDataService:
                     "treasury_10y": self._get_macro_value(macro_data, "treasury_10y", 4.5),
                     "vix": self._get_macro_value(macro_data, "vix", 15.0),
                 },
+
+                # 技术指标（为TAAgent准备）
+                "indicators": indicators_dict,
 
                 # 时间戳
                 "timestamp": datetime.utcnow().isoformat(),

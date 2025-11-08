@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, root_validator
 from app.schemas.base import UTCAwareBaseModel
 
 
@@ -33,6 +33,65 @@ class RiskLevel(str, Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
+
+# ============ Agent Weights ============
+
+class AgentWeights(BaseModel):
+    """Agent权重配置"""
+    macro: float = Field(..., ge=0, le=1, description="MacroAgent权重 (0-1)")
+    onchain: float = Field(..., ge=0, le=1, description="OnChainAgent权重 (0-1)")
+    ta: float = Field(..., ge=0, le=1, description="TAAgent权重 (0-1)")
+
+    @root_validator(skip_on_failure=True)
+    def validate_weights_sum(cls, values):
+        """验证权重总和为1.0（允许±0.01的误差）"""
+        macro = values.get('macro', 0)
+        onchain = values.get('onchain', 0)
+        ta = values.get('ta', 0)
+        total = macro + onchain + ta
+
+        if not (0.99 <= total <= 1.01):
+            raise ValueError(f'Agent权重总和必须为100% (当前: {total*100:.1f}%)')
+
+        return values
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "macro": 0.40,
+                "onchain": 0.40,
+                "ta": 0.20
+            }
+        }
+
+
+class AgentWeightsPreset(BaseModel):
+    """Agent权重预设"""
+    name: str
+    description: str
+    weights: AgentWeights
+
+    class Config:
+        schema_extra = {
+            "examples": [
+                {
+                    "name": "牛市初期",
+                    "description": "看重链上数据和技术指标，宏观环境相对稳定",
+                    "weights": {"macro": 0.30, "onchain": 0.50, "ta": 0.20}
+                },
+                {
+                    "name": "牛市末期",
+                    "description": "关注宏观风险和技术面过热信号",
+                    "weights": {"macro": 0.50, "onchain": 0.20, "ta": 0.30}
+                },
+                {
+                    "name": "熊市期间",
+                    "description": "重视宏观经济和链上底部信号",
+                    "weights": {"macro": 0.45, "onchain": 0.35, "ta": 0.20}
+                }
+            ]
+        }
 
 
 # ============ Strategy Execution ============
@@ -102,6 +161,8 @@ class PortfolioResponse(UTCAwareBaseModel):
     sharpe_ratio: Optional[float] = None
     is_active: bool
     strategy_name: Optional[str] = None
+    rebalance_period_minutes: int = 10
+    agent_weights: Optional[Dict[str, float]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -219,6 +280,7 @@ class StrategyMarketplaceCard(BaseModel):
     max_drawdown: float
     sharpe_ratio: float
     pool_size: float
+    total_pnl: float  # 总盈亏
     squad_size: int
     risk_level: str
     history: List[HistoryPoint]
@@ -251,6 +313,15 @@ class PerformanceHistory(BaseModel):
     dates: List[str]
 
 
+class AgentContribution(BaseModel):
+    """单个Agent的贡献信息"""
+    agent_name: str  # macro_agent, ta_agent, onchain_agent
+    display_name: str  # Macro Scout, Momentum Scout, Chain Guardian
+    signal: str  # BULLISH, BEARISH, NEUTRAL
+    confidence: float  # 0.0-1.0 AI可靠性评估
+    score: float  # -100.0到+100.0 投资建议强度
+
+
 class RecentActivity(BaseModel):
     """最近操作记录"""
     date: str
@@ -259,6 +330,11 @@ class RecentActivity(BaseModel):
     result: str
     agent: str
     execution_id: Optional[str] = None
+    conviction_score: Optional[float] = None
+    consecutive_count: Optional[int] = None  # 连续信号计数
+    agent_contributions: Optional[List[AgentContribution]] = None  # 各Agent的贡献详情
+    status: Optional[str] = None  # 执行状态: completed/failed
+    error_details: Optional[dict] = None  # 错误详情（如果失败）
 
 
 class StrategyParameters(BaseModel):
@@ -307,7 +383,12 @@ class StrategyDetailResponse(BaseModel):
     philosophy: str
     holdings: List[HoldingInfo]
     total_unrealized_pnl: float
+    total_realized_pnl: float
+    total_pnl: float
+    total_pnl_percent: float
     current_balance: float
+    initial_balance: float
+    total_fees: float
 
 
 # ============ Strategy Execution Details ============
@@ -348,4 +429,15 @@ class StrategyExecutionDetail(UTCAwareBaseModel):
     risk_level: Optional[str]
     execution_duration_ms: Optional[int]
     error_message: Optional[str]
+    error_details: Optional[Dict[str, Any]] = None
     agent_executions: List[AgentExecutionDetail]
+    trades: List[TradeResponse] = Field(default_factory=list, description="该执行产生的交易记录")
+
+
+class TradeListResponse(BaseModel):
+    """交易记录列表响应（分页）"""
+    items: List[TradeResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

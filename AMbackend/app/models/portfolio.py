@@ -42,6 +42,27 @@ class Portfolio(Base):
     # 策略参数
     rebalance_period_minutes = Column(Integer, server_default='10', nullable=False)  # 策略执行周期（分钟）
     last_execution_time = Column(TIMESTAMP, nullable=True)  # 上次执行时间
+    agent_weights = Column(JSONB, nullable=True)  # Agent权重配置 {"macro": 0.40, "onchain": 0.40, "ta": 0.20}
+
+    # 连续信号机制配置
+    consecutive_bullish_count = Column(Integer, server_default='0', nullable=False)  # 当前连续看涨信号次数
+    consecutive_bullish_since = Column(TIMESTAMP, nullable=True)  # 连续看涨开始时间
+    consecutive_bearish_count = Column(Integer, server_default='0', nullable=False)  # 当前连续看跌信号次数
+    consecutive_bearish_since = Column(TIMESTAMP, nullable=True)  # 连续看跌开始时间
+    last_conviction_score = Column(Float, nullable=True)  # 上次信念分数
+    consecutive_signal_threshold = Column(Integer, server_default='30', nullable=False)  # 连续信号阈值（触发加速）
+    acceleration_multiplier_min = Column(Float, server_default='1.1', nullable=False)  # 加速乘数最小值
+    acceleration_multiplier_max = Column(Float, server_default='2.0', nullable=False)  # 加速乘数最大值
+
+    # 交易阈值配置
+    fg_circuit_breaker_threshold = Column(Integer, server_default='20', nullable=False)  # Fear & Greed熔断阈值 (< 此值暂停交易)
+    fg_position_adjust_threshold = Column(Integer, server_default='30', nullable=False)  # Fear & Greed仓位调整阈值 (< 此值减少仓位)
+    buy_threshold = Column(Float, server_default='50', nullable=False)  # 买入阈值 (Conviction Score >= 此值买入)
+    partial_sell_threshold = Column(Float, server_default='50', nullable=False)  # 部分减仓阈值 (Conviction Score 介于此值和full_sell之间部分减仓)
+    full_sell_threshold = Column(Float, server_default='45', nullable=False)  # 全部清仓阈值 (Conviction Score < 此值全部清仓)
+
+    # 基准对比参数
+    initial_btc_amount = Column(NUMERIC(20, 8), nullable=True)  # 初始BTC数量(用于基准对比)
 
     created_at = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
     updated_at = Column(TIMESTAMP, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

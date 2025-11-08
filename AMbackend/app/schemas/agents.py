@@ -41,7 +41,10 @@ class AgentOutput(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     signal: SignalType = Field(description="Trading signal")
     confidence: float = Field(
-        ge=0.0, le=1.0, description="Confidence score between 0 and 1"
+        ge=0.0, le=1.0, description="AI's confidence in its own analysis (subjective reliability)"
+    )
+    score: float = Field(
+        ge=-100.0, le=100.0, description="Investment conviction score: -100 (strong bearish) to +100 (strong bullish)"
     )
     confidence_level: ConfidenceLevel = Field(description="Confidence level category")
     reasoning: str = Field(description="Detailed reasoning for the signal")

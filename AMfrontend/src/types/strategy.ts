@@ -20,6 +20,7 @@ export interface StrategyCard {
   max_drawdown: number;
   sharpe_ratio: number;
   pool_size: number;             // 不是 tvl
+  total_pnl: number;             // 总盈亏
   squad_size: number;
   risk_level: string;
   history: HistoryPoint[];
@@ -57,6 +58,14 @@ export interface PerformanceHistory {
   dates: string[];
 }
 
+export interface AgentContribution {
+  agent_name: string;
+  display_name: string;
+  signal: string;
+  confidence: number;
+  score: number;
+}
+
 export interface RecentActivity {
   date: string;
   signal: string;
@@ -64,6 +73,11 @@ export interface RecentActivity {
   result: string;
   agent: string;
   execution_id?: string;
+  conviction_score?: number | null;
+  consecutive_count?: number | null;  // 连续信号计数
+  agent_contributions?: AgentContribution[] | null;  // 各Agent的贡献详情
+  status?: string;  // 执行状态: 'success', 'failed'
+  error_details?: ErrorDetails | null;  // 错误详情
 }
 
 export interface StrategyParameters {
@@ -101,7 +115,12 @@ export interface StrategyDetail {
   philosophy: string;
   holdings: HoldingInfo[];
   total_unrealized_pnl: number;
+  total_realized_pnl: number;
+  total_pnl: number;
+  total_pnl_percent: number;
   current_balance: number;
+  initial_balance: number;
+  total_fees: number;
 }
 
 // ============ Chart Data (前端使用) ============
@@ -136,6 +155,33 @@ export interface AgentExecutionDetail {
   llm_cost: number | null;
 }
 
+export interface ErrorDetails {
+  error_type: string;
+  failed_agent?: string;
+  error_message: string;
+  retry_count?: number;
+}
+
+export interface TradeResponse {
+  id: string;
+  symbol: string;
+  trade_type: 'BUY' | 'SELL';
+  amount: number;
+  price: number;
+  total_value: number;
+  fee: number;
+  balance_before: number | null;
+  balance_after: number | null;
+  holding_before: number | null;
+  holding_after: number | null;
+  realized_pnl: number | null;
+  realized_pnl_percent: number | null;
+  conviction_score: number | null;
+  reason: string | null;
+  executed_at: string;
+  created_at: string;
+}
+
 export interface StrategyExecutionDetail {
   id: string;
   execution_time: string;
@@ -149,5 +195,7 @@ export interface StrategyExecutionDetail {
   risk_level: string | null;
   execution_duration_ms: number | null;
   error_message: string | null;
+  error_details: ErrorDetails | null;
   agent_executions: AgentExecutionDetail[];
+  trades: TradeResponse[];
 }

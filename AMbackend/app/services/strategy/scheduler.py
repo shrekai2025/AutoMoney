@@ -92,10 +92,10 @@ class StrategyScheduler:
             max_instances=1,
         )
 
-        # Job 2: 组合快照 (每天 UTC 0点)
+        # Job 2: 组合快照 (每10分钟)
         self.scheduler.add_job(
             self.create_portfolio_snapshots_job,
-            trigger=CronTrigger(hour=0, minute=0),
+            trigger=IntervalTrigger(minutes=10),
             id="portfolio_snapshots",
             name="组合快照",
             replace_existing=True,
@@ -348,6 +348,16 @@ class StrategyScheduler:
                 # 3. 为每个组合创建快照
                 for portfolio in portfolios:
                     try:
+                        # 如果是第一次快照,计算并保存 initial_btc_amount
+                        if portfolio.initial_btc_amount is None and btc_price > 0:
+                            portfolio.initial_btc_amount = portfolio.initial_balance / btc_price
+                            logger.info(
+                                f"初始化 BTC 基准: {portfolio.name}, "
+                                f"初始余额: ${portfolio.initial_balance}, "
+                                f"BTC 价格: ${btc_price}, "
+                                f"BTC 数量: {portfolio.initial_btc_amount}"
+                            )
+
                         # 计算持仓价值
                         holdings_value = Decimal("0")
                         holdings_data = {}

@@ -33,6 +33,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠ Warning: Strategy scheduler initialization failed: {e}")
         print("  App will continue but automated trading will not work")
+        import traceback
+        traceback.print_exc()
 
     yield
 

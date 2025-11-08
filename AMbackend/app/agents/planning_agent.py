@@ -70,12 +70,12 @@ Do NOT plan for agents that are not listed. If an agent you想要的 is not avai
 - ta_agent (high): Technical entry/exit points
 - onchain_agent (medium): Whale behavior signals
 
-**Market Analysis** ("分析当前BTC市场"):
+**Market Analysis** ("Analyze current BTC market"):
 - macro_agent (high): Macro drivers
 - ta_agent (high): Price action and trends
 - onchain_agent (medium): On-chain signals
 
-**Cause Analysis** ("为什么BTC最近下跌?"):
+**Cause Analysis** ("Why is BTC falling recently?"):
 - macro_agent (high): Macro headwinds
 - ta_agent (medium): Technical breakdown levels
 - onchain_agent (low): On-chain activity changes

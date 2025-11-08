@@ -44,8 +44,8 @@ class AgentExecution(Base):
 
     # 标准化输出（所有Agent统一格式）
     signal = Column(String(20), nullable=False, comment="信号: BULLISH, BEARISH, NEUTRAL")
-    confidence = Column(NUMERIC(3, 2), nullable=False, comment="置信度: 0.00 ~ 1.00")
-    score = Column(NUMERIC(3, 2), comment="分数: -1.00 ~ +1.00 (可选)")
+    confidence = Column(NUMERIC(3, 2), nullable=False, comment="置信度: 0.00 ~ 1.00 (AI对自己分析的可靠性评估)")
+    score = Column(NUMERIC(5, 2), nullable=False, comment="投资建议分数: -100.00 ~ +100.00 (客观投资建议强度)")
     reasoning = Column(Text, nullable=False, comment="LLM推理过程")
 
     # Agent专属数据（JSONB灵活存储）
@@ -96,7 +96,7 @@ class AgentExecution(Base):
     # 约束
     __table_args__ = (
         CheckConstraint('confidence >= 0 AND confidence <= 1', name='chk_confidence'),
-        CheckConstraint('score IS NULL OR (score >= -1 AND score <= 1)', name='chk_score'),
+        CheckConstraint('score >= -100 AND score <= 100', name='chk_score'),
         CheckConstraint("signal IN ('BULLISH', 'BEARISH', 'NEUTRAL')", name='chk_signal'),
         CheckConstraint("status IN ('success', 'failed', 'timeout')", name='chk_status'),
 

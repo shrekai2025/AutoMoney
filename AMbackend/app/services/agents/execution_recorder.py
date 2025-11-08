@@ -91,7 +91,7 @@ class AgentExecutionRecorder:
             # 标准化输出
             signal=output.signal.value,
             confidence=output.confidence,
-            score=None,  # MacroAgent不输出score
+            score=output.score,  # 🔧 使用Agent输出的score
             reasoning=output.reasoning,
 
             # Agent专属数据
@@ -163,7 +163,7 @@ class AgentExecutionRecorder:
             # 标准化输出
             signal=output.signal.value,
             confidence=output.confidence,
-            score=None,
+            score=output.score,  # 🔧 使用Agent输出的score
             reasoning=output.reasoning,
 
             # Agent专属数据
@@ -238,7 +238,7 @@ class AgentExecutionRecorder:
             # 标准化输出
             signal=output.signal.value,
             confidence=output.confidence,
-            score=None,
+            score=output.score,  # 🔧 使用Agent输出的score
             reasoning=output.reasoning,
 
             # Agent专属数据

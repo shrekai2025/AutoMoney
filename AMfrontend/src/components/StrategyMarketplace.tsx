@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
-import { LineChart, Line, ResponsiveContainer } from "recharts";
+import { LineChart, Line, ResponsiveContainer, YAxis } from "recharts";
 import { TrendingUp, TrendingDown, Shield, Target, Users, Flame, Clock } from "lucide-react";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import redCharacter from "figma:asset/e7df430614095df0bf6f8507a2c9ff6a9129eaaf.png";
@@ -258,6 +258,15 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
                           <stop offset="95%" stopColor={lineColor} stopOpacity={0}/>
                         </linearGradient>
                       </defs>
+                      <YAxis
+                        hide
+                        domain={(() => {
+                          const values = strategy.history.map(h => h.value);
+                          const minValue = Math.min(...values);
+                          const yMin = Math.max(0, minValue - 1000);
+                          return [yMin, 'auto'];
+                        })()}
+                      />
                       <Line
                         type="monotone"
                         dataKey="value"
@@ -275,7 +284,7 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
                   <div className="bg-slate-800/30 rounded p-1.5">
                     <div className="text-xs text-slate-500 mb-0.5 flex items-center gap-1">
                       <Flame className={`w-2.5 h-2.5 ${isNegativeReturn ? 'text-red-400' : 'text-emerald-400'}`} />
-                      Return Power
+                      APY
                     </div>
                     <div className={`flex items-center gap-0.5 ${isNegativeReturn ? 'text-red-400' : 'text-emerald-400'}`}>
                       <span className="text-xs">{strategy.annualized_return > 0 ? '+' : ''}{strategy.annualized_return.toFixed(2)}%</span>
@@ -284,17 +293,17 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
                   <div className="bg-slate-800/30 rounded p-1.5">
                     <div className="text-xs text-slate-500 mb-0.5 flex items-center gap-1">
                       <Shield className="w-2.5 h-2.5 text-blue-400" />
-                      Defense
+                      Total Account Value
                     </div>
-                    <div className="flex items-center gap-0.5 text-red-400">
-                      <span className="text-xs">{strategy.max_drawdown.toFixed(2)}%</span>
+                    <div className="flex items-center gap-0.5 text-slate-300">
+                      <span className="text-xs">${formatPoolSize(strategy.pool_size)}</span>
                     </div>
                   </div>
                   <div className="bg-slate-800/30 rounded p-1.5">
-                    <div className="text-xs text-slate-500 mb-0.5">Sharpe</div>
-                    <div className="flex items-center gap-0.5 text-slate-300">
+                    <div className="text-xs text-slate-500 mb-0.5">Total P&L</div>
+                    <div className={`flex items-center gap-0.5 ${strategy.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                       <Target className="w-2.5 h-2.5" />
-                      <span className="text-xs">{strategy.sharpe_ratio.toFixed(2)}</span>
+                      <span className="text-xs">{strategy.total_pnl >= 0 ? '+' : ''}${strategy.total_pnl.toFixed(2)}</span>
                     </div>
                   </div>
                   <div className="bg-slate-800/30 rounded p-1.5">

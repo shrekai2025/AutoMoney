@@ -1,7 +1,7 @@
 """OnChain Agent - Analyzes on-chain metrics and network health"""
 
 from typing import Dict, Any
-from app.schemas.agents import OnChainAnalysisOutput
+from app.schemas.agents import OnChainAnalysisOutput, SignalType, AgentOutput
 from app.services.llm.manager import llm_manager
 from app.schemas.llm import Message
 from app.utils.json_parser import parse_llm_json, JSONParseError
@@ -18,9 +18,102 @@ class OnChainAgent:
     - Chain activity trends
     """
 
+    SYSTEM_PROMPT = """You are an on-chain analysis expert specializing in cryptocurrency markets, particularly Bitcoin.
+
+Your role is to analyze blockchain metrics and network health to generate trading signals.
+
+Key metrics you should analyze:
+1. **Network Activity**: Active addresses, transaction volume, hash rate
+2. **Network Health**: Transaction fees, mempool congestion, block times
+3. **Valuation Metrics**: NVT ratio (Network Value to Transactions)
+4. **Mining & Security**: Hash rate, difficulty adjustments
+
+Analysis guidelines:
+- **BULLISH signals**: Rising active addresses, healthy transaction volume, reasonable fees, strong hash rate
+- **BEARISH signals**: Declining network activity, congestion, extreme NVT values
+- **NEUTRAL signals**: Mixed indicators, stable metrics
+
+⚠️ CRITICAL OUTPUT REQUIREMENTS:
+
+1. ❌ ABSOLUTELY NO MARKDOWN in JSON string values (no **, ##, -, *, etc.)
+2. ❌ NO markdown code blocks (no ```json or ```)
+3. ❌ NO extra text before or after the JSON
+4. ❌ NO thinking, explanations, or commentary outside JSON
+5. ✅ Use plain text in "reasoning" and other string fields
+6. ✅ Use \\n for line breaks in strings (NOT real newlines)
+7. ✅ Start response with { and end with }
+8. ✅ Use double quotes for all strings
+9. ✅ Escape special characters properly
+
+IMPORTANT: You must respond with ONLY valid JSON. Do not include any thinking or text before or after the JSON.
+The JSON must match this exact structure with these exact field names:
+
+{
+  "signal": "BULLISH",
+  "confidence": 0.75,
+  "score": 60.0,
+  "reasoning": "Brief explanation of your analysis and signal",
+  "onchain_metrics": {
+    "active_addresses": 950000,
+    "daily_transactions": 300000,
+    "transaction_fees_sat_vb": 50,
+    "mempool_tx_count": 25000,
+    "nvt_ratio": 85.5,
+    "hash_rate_eh": 450.5
+  },
+  "network_health": "HEALTHY",
+  "key_observations": [
+    "Rising active addresses indicating growing adoption",
+    "Transaction fees are reasonable",
+    "Strong hash rate securing the network"
+  ]
+}
+
+CRITICAL REQUIREMENTS:
+- "signal" MUST be one of: "BULLISH", "BEARISH", or "NEUTRAL" (no other values)
+- "confidence" MUST be a decimal between 0.0 and 1.0 (NOT a percentage like 72, use 0.72 instead)
+- "score" MUST be a number between -100.0 and 100.0 representing investment conviction:
+  * -100 to -60: Strong bearish (recommend selling/shorting)
+  * -60 to -20: Moderate bearish (reduce exposure)
+  * -20 to +20: Neutral (hold current position)
+  * +20 to +60: Moderate bullish (accumulate gradually)
+  * +60 to +100: Strong bullish (aggressive buying)
+- "network_health" MUST be one of: "HEALTHY", "MODERATE", or "CONGESTED"
+- "key_observations" must be an array of strings (2-4 observations)
+- All field names must match exactly as shown above
+
+🎯 UNDERSTAND THE DIFFERENCE:
+- **confidence** (0-1): Your subjective certainty about this analysis. How reliable is your reading of the data?
+- **score** (-100 to +100): Objective investment recommendation. How much should investors buy or sell?
+
+Example:
+- "I'm 80% confident (confidence=0.8) that the on-chain fundamentals are strong bullish (score=+65)"
+- "I'm only 60% confident (confidence=0.6) due to some mixed signals, but the bullish indicators dominate (score=+40)"
+
+Be objective, data-driven, and consider:
+- Network adoption trends (rising/falling activity)
+- Network congestion and usability
+- Valuation relative to network activity (NVT)
+- Security and mining health
+
+Your score calculation should reflect:
+- Strength of network activity trends
+- Health of the network (congestion, fees)
+- Valuation metrics (NVT ratio)
+- Overall on-chain fundamentals
+
+Your confidence should reflect:
+- Data quality and completeness
+- Clarity of trends (mixed signals = lower confidence)
+- Unusual market conditions
+
+⚠️ FINAL REMINDER: Respond with ONLY the JSON object. NO MARKDOWN formatting in string values. Start with { and end with }.
+"""
+
     def __init__(self):
         self.name = "onchain_agent"
-        self.description = "链上数据分析专家，分析网络活跃度、交易费用和链上健康度"
+        self.agent_name = "onchain_agent"
+        self.description = "On-chain data analysis expert, analyzing network activity, transaction fees, and chain health"
 
     async def analyze(self, user_query: str, market_data: Dict[str, Any]) -> OnChainAnalysisOutput:
         """
@@ -34,40 +127,38 @@ class OnChainAgent:
             OnChainAnalysisOutput with analysis results
         """
         # Build analysis prompt
-        prompt = self._build_analysis_prompt(user_query, market_data)
+        analysis_prompt = self._build_analysis_prompt(user_query, market_data)
+
+        # Prepend system prompt to user message
+        full_prompt = f"{self.SYSTEM_PROMPT}\n\n{analysis_prompt}"
 
         # Get LLM response
-        messages = [Message(role="user", content=prompt)]
+        messages = [Message(role="user", content=full_prompt)]
         llm_response = await llm_manager.chat_for_agent(
-            agent_name="onchain_agent",
+            agent_name=self.agent_name,
             messages=messages,
         )
 
         # Parse LLM response
-        response_text = llm_response.content
-        
-        try:
-            # Parse JSON output from LLM
-            result_dict = parse_llm_json(response_text)
+        analysis = self._parse_llm_response(llm_response.content)
 
-            # Auto-calculate confidence_level if LLM didn't provide it
-            if 'confidence_level' not in result_dict:
-                confidence = result_dict.get('confidence', 0.5)
-                result_dict['confidence_level'] = OnChainAnalysisOutput.get_confidence_level(confidence)
-
-            # Create OnChainAnalysisOutput
-            response = OnChainAnalysisOutput(**result_dict)
-
-            # Store full conversation for UI
-            response.prompt_sent = prompt
-            response.llm_response = response_text
-
-            return response
-            
-        except (JSONParseError, Exception) as e:
-            print(f"Error parsing OnChainAgent response: {e}")
-            print(f"Raw response: {response_text}")
-            raise
+        # Build output with full conversation
+        return OnChainAnalysisOutput(
+            agent_name=self.agent_name,
+            signal=SignalType(analysis["signal"]),
+            confidence=float(analysis["confidence"]),
+            score=float(analysis["score"]),
+            confidence_level=AgentOutput.get_confidence_level(
+                float(analysis["confidence"])
+            ),
+            reasoning=analysis["reasoning"],
+            onchain_metrics=analysis["onchain_metrics"],
+            network_health=analysis["network_health"],
+            key_observations=analysis["key_observations"],
+            # Add full conversation for UI display
+            prompt_sent=full_prompt,
+            llm_response=llm_response.content,
+        )
 
     def _build_analysis_prompt(self, user_query: str, market_data: Dict[str, Any]) -> str:
         """Build the analysis prompt for LLM"""
@@ -133,27 +224,89 @@ class OnChainAgent:
 4. Identify any concerning trends or positive signals
 5. Generate a signal: BULLISH (strong on-chain fundamentals), NEUTRAL (mixed signals), or BEARISH (weak fundamentals)
 
-**Output Format:**
-Please provide your analysis in the following JSON structure:
-{{
-  "signal": "BULLISH" | "NEUTRAL" | "BEARISH",
-  "confidence": 0.0 to 1.0,
-  "reasoning": "Brief explanation of your analysis and signal",
-  "onchain_metrics": {{
-    "active_addresses": {active_addresses if active_addresses else 0},
-    "daily_transactions": {tx_count.get('avg_30d', 0)},
-    "transaction_fees_sat_vb": {fees.get('fastestFee', 0)},
-    "mempool_tx_count": {mempool_stats.get('count', 0)},
-    "nvt_ratio": {nvt_ratio if nvt_ratio else "null"},
-    "hash_rate_eh": {network_stats.get('hash_rate', 0) / 1e9:.2f}
-  }},
-  "network_health": "Assessment of network health: HEALTHY, MODERATE, or CONGESTED",
-  "key_observations": ["List 2-4 key observations from the on-chain data"]
-}}
-
-Focus on actionable insights that help understand network adoption, usage patterns, and valuation relative to network activity."""
+Return your analysis in the specified JSON format."""
 
         return prompt
+
+    def _parse_llm_response(self, content: str) -> Dict[str, Any]:
+        """
+        Parse LLM response and extract structured analysis
+
+        Args:
+            content: Raw LLM response content
+
+        Returns:
+            Parsed analysis dictionary
+        """
+        try:
+            # Try to extract JSON from response
+            if "```json" in content:
+                json_start = content.find("```json") + 7
+                json_end = content.find("```", json_start)
+                json_str = content[json_start:json_end].strip()
+            elif "```" in content:
+                json_start = content.find("```") + 3
+                json_end = content.find("```", json_start)
+                json_str = content[json_start:json_end].strip()
+            else:
+                # Assume entire response is JSON
+                json_str = content.strip()
+
+            # Parse JSON
+            analysis = parse_llm_json(content)
+
+            # Validate required fields
+            required_fields = [
+                "signal",
+                "confidence",
+                "score",
+                "reasoning",
+                "onchain_metrics",
+                "network_health",
+                "key_observations",
+            ]
+            for field in required_fields:
+                if field not in analysis:
+                    raise ValueError(f"Missing required field: {field}")
+
+            # Validate signal type
+            if analysis["signal"] not in ["BULLISH", "BEARISH", "NEUTRAL"]:
+                raise ValueError(f"Invalid signal type: {analysis['signal']}")
+
+            # Validate confidence range
+            confidence = float(analysis["confidence"])
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError(f"Confidence must be between 0 and 1: {confidence}")
+
+            # Validate score range
+            score = float(analysis["score"])
+            if not -100.0 <= score <= 100.0:
+                raise ValueError(f"Score must be between -100 and 100: {score}")
+
+            # Validate network_health
+            if analysis["network_health"] not in ["HEALTHY", "MODERATE", "CONGESTED"]:
+                raise ValueError(f"Invalid network_health: {analysis['network_health']}")
+
+            # Validate key_observations is a list
+            if not isinstance(analysis["key_observations"], list):
+                raise ValueError("key_observations must be a list")
+
+            return analysis
+
+        except (JSONParseError, ValueError) as e:
+            # Fallback: return neutral signal with low confidence
+            print(f"Error parsing LLM response: {e}")
+            print(f"Raw content: {content[:500]}...")
+
+            return {
+                "signal": "NEUTRAL",
+                "confidence": 0.3,
+                "score": 0.0,
+                "reasoning": f"Unable to parse LLM response properly. Error: {str(e)}. Raw response available in logs.",
+                "onchain_metrics": {},
+                "network_health": "MODERATE",
+                "key_observations": ["Analysis parsing error - please review logs"],
+            }
 
     @property
     def is_available(self) -> bool:

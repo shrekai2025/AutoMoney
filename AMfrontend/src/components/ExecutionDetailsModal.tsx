@@ -187,10 +187,12 @@ export function ExecutionDetailsModal({
                     <div className="text-xs text-slate-500 mb-1">Final Signal</div>
                     <Badge
                       className={`text-xs ${
-                        execution.signal === "BULLISH"
+                        execution.signal === "BUY"
                           ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50"
-                          : execution.signal === "BEARISH"
+                          : execution.signal === "SELL"
                           ? "bg-red-500/20 text-red-400 border-red-500/50"
+                          : execution.signal === "HOLD"
+                          ? "bg-blue-500/20 text-blue-400 border-blue-500/50"
                           : "bg-slate-500/20 text-slate-400 border-slate-500/50"
                       }`}
                     >
@@ -200,6 +202,120 @@ export function ExecutionDetailsModal({
                 )}
               </CardContent>
             </Card>
+
+            {/* Trade Details - Only show if trades exist */}
+            {execution.trades && execution.trades.length > 0 && (
+              <Card className="bg-slate-900/50 border-slate-700/50">
+                <CardHeader className="pb-2 pt-2.5 px-3">
+                  <CardTitle className="text-white text-xs font-semibold flex items-center gap-2">
+                    <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
+                    Trade Executed ({execution.trades.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-2.5">
+                  {execution.trades.map((trade, index) => (
+                    <div key={trade.id} className={`${index > 0 ? 'mt-3 pt-3 border-t border-slate-700/30' : ''}`}>
+                      {/* Trade Header */}
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            className={`text-xs ${
+                              trade.trade_type === "BUY"
+                                ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50"
+                                : "bg-red-500/20 text-red-400 border-red-500/50"
+                            }`}
+                          >
+                            {trade.trade_type === "BUY" ? "BUY" : "SELL"} {trade.symbol}
+                          </Badge>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {new Date(trade.executed_at).toLocaleString()}
+                        </div>
+                      </div>
+
+                      {/* Trade Details Grid */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                        <div className="bg-slate-800/30 rounded p-2">
+                          <div className="text-xs text-slate-500 mb-1">Amount</div>
+                          <div className="text-white text-xs font-medium">
+                            {Number(trade.amount).toFixed(8)} {trade.symbol}
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-800/30 rounded p-2">
+                          <div className="text-xs text-slate-500 mb-1">Price</div>
+                          <div className="text-white text-xs font-medium">
+                            ${Number(trade.price).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-800/30 rounded p-2">
+                          <div className="text-xs text-slate-500 mb-1">Total Value</div>
+                          <div className="text-white text-xs font-medium">
+                            ${Number(trade.total_value).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-800/30 rounded p-2">
+                          <div className="text-xs text-slate-500 mb-1">Fee</div>
+                          <div className="text-white text-xs font-medium">
+                            ${Number(trade.fee).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Balance Changes */}
+                      {(trade.balance_before !== null || trade.holding_before !== null) && (
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          {trade.balance_before !== null && trade.balance_after !== null && (
+                            <div className="bg-slate-800/30 rounded p-2">
+                              <div className="text-xs text-slate-500 mb-1">Cash Balance</div>
+                              <div className="text-white text-xs">
+                                ${Number(trade.balance_before).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} → ${Number(trade.balance_after).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                              </div>
+                            </div>
+                          )}
+
+                          {trade.holding_before !== null && trade.holding_after !== null && (
+                            <div className="bg-slate-800/30 rounded p-2">
+                              <div className="text-xs text-slate-500 mb-1">{trade.symbol} Holding</div>
+                              <div className="text-white text-xs">
+                                {Number(trade.holding_before).toFixed(8)} → {Number(trade.holding_after).toFixed(8)}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* PnL if SELL */}
+                      {trade.trade_type === "SELL" && trade.realized_pnl !== null && (
+                        <div className="bg-slate-800/30 rounded p-2 mt-2">
+                          <div className="text-xs text-slate-500 mb-1">Realized PnL</div>
+                          <div className={`text-xs font-semibold ${Number(trade.realized_pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {Number(trade.realized_pnl) >= 0 ? '+' : ''}${Number(trade.realized_pnl).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            {trade.realized_pnl_percent !== null && (
+                              <span className="ml-1">
+                                ({Number(trade.realized_pnl_percent) >= 0 ? '+' : ''}{Number(trade.realized_pnl_percent).toFixed(2)}%)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Trade Reason */}
+                      {trade.reason && (
+                        <div className="bg-slate-800/30 rounded p-2 mt-2">
+                          <div className="text-xs text-slate-500 mb-1">Reason</div>
+                          <div className="text-white text-xs">
+                            {trade.reason}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Agent Executions */}
             <Card className="bg-slate-900/50 border-slate-700/50">
@@ -270,7 +386,10 @@ function AgentExecutionView({ agent }: { agent: AgentExecutionDetail }) {
         </div>
 
         <div className="bg-slate-800/30 rounded p-2">
-          <div className="text-xs text-slate-500 mb-1">Confidence</div>
+          <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+            <span>Agent Confidence</span>
+            <span className="text-[10px] text-slate-600" title="AI's certainty about its own analysis">(reliability)</span>
+          </div>
           <div className="text-white text-sm font-semibold">
             {(agent.confidence * 100).toFixed(1)}%
           </div>
@@ -278,14 +397,17 @@ function AgentExecutionView({ agent }: { agent: AgentExecutionDetail }) {
 
         {agent.score !== null && (
           <div className="bg-slate-800/30 rounded p-2">
-            <div className="text-xs text-slate-500 mb-1">Score</div>
+            <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+              <span>Conviction Score</span>
+              <span className="text-[10px] text-slate-600" title="Investment recommendation strength">(investment)</span>
+            </div>
             <div
               className={`text-sm font-semibold ${
                 agent.score > 0 ? "text-emerald-400" : agent.score < 0 ? "text-red-400" : "text-slate-400"
               }`}
             >
               {agent.score > 0 ? "+" : ""}
-              {agent.score.toFixed(2)}
+              {agent.score.toFixed(1)}
             </div>
           </div>
         )}

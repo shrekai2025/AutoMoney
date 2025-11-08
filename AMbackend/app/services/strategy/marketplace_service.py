@@ -20,10 +20,12 @@ from app.schemas.strategy import (
     ConvictionSummary,
     PerformanceHistory,
     RecentActivity,
+    AgentContribution,
     StrategyParameters,
     PerformanceMetrics,
     StrategyExecutionDetail,
     AgentExecutionDetail,
+    TradeResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,6 +213,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                     max_drawdown=portfolio.max_drawdown,
                     sharpe_ratio=portfolio.sharpe_ratio or 0.0,
                     pool_size=float(portfolio.total_value),
+                    total_pnl=float(portfolio.total_pnl),
                     squad_size=3,  # 固定3个Agent
                     risk_level=mapped_risk_level,
                     history=history,
@@ -268,8 +271,29 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # 获取最新的conviction summary
             conviction_summary = await self._get_conviction_summary(db, portfolio.user_id)
 
-            # Squad agents（固定配置）
-            squad_agents = [SquadAgent(**agent) for agent in self.SQUAD_AGENTS]
+            # Squad agents（使用实际的agent_weights配置）
+            if portfolio.agent_weights:
+                # 使用数据库中保存的权重
+                squad_agents = [
+                    SquadAgent(
+                        name="The Oracle",
+                        role="MacroAgent",
+                        weight=f"{int(portfolio.agent_weights.get('macro', 0.4) * 100)}%"
+                    ),
+                    SquadAgent(
+                        name="Data Warden",
+                        role="OnChainAgent",
+                        weight=f"{int(portfolio.agent_weights.get('onchain', 0.4) * 100)}%"
+                    ),
+                    SquadAgent(
+                        name="Momentum Scout",
+                        role="TAAgent",
+                        weight=f"{int(portfolio.agent_weights.get('ta', 0.2) * 100)}%"
+                    ),
+                ]
+            else:
+                # 如果没有配置，使用默认配置
+                squad_agents = [SquadAgent(**agent) for agent in self.SQUAD_AGENTS]
 
             # 获取性能历史数据
             performance_history = await self._get_performance_history(db, portfolio_id)
@@ -307,6 +331,30 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 })
                 total_unrealized_pnl += unrealized_pnl
 
+            # 计算总交易手续费
+            from app.models.portfolio import Trade
+            from sqlalchemy import func
+            fees_stmt = (
+                select(func.coalesce(func.sum(Trade.fee), 0))
+                .where(Trade.portfolio_id == portfolio_id)
+            )
+            fees_result = await db.execute(fees_stmt)
+            total_fees = fees_result.scalar() or Decimal("0")
+
+            # 计算已实现盈亏（所有SELL交易的realized_pnl总和，用于展示）
+            realized_pnl_stmt = (
+                select(func.coalesce(func.sum(Trade.realized_pnl), 0))
+                .where(Trade.portfolio_id == portfolio_id)
+                .where(Trade.trade_type == "SELL")
+            )
+            realized_pnl_result = await db.execute(realized_pnl_stmt)
+            total_realized_pnl = realized_pnl_result.scalar() or Decimal("0")
+
+            # Total P&L应该使用当前总价值 - 初始资金
+            # 这已经包含了所有盈亏（已实现+未实现）和所有成本（手续费）
+            total_pnl = portfolio.total_value - portfolio.initial_balance
+            total_pnl_percent = float(total_pnl / portfolio.initial_balance * 100) if portfolio.initial_balance > 0 else 0.0
+
             return StrategyDetailResponse(
                 id=str(portfolio.id),
                 name=portfolio.name,
@@ -321,7 +369,12 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 philosophy=self.STRATEGY_PHILOSOPHY,
                 holdings=holdings_info,
                 total_unrealized_pnl=float(total_unrealized_pnl),
+                total_realized_pnl=float(total_realized_pnl),
+                total_pnl=float(total_pnl),
+                total_pnl_percent=total_pnl_percent,
                 current_balance=float(portfolio.current_balance),
+                initial_balance=float(portfolio.initial_balance),
+                total_fees=float(total_fees),
             )
 
         except Exception as e:
@@ -331,8 +384,8 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
     async def _get_conviction_summary(
         self, db: AsyncSession, user_id: int
     ) -> ConvictionSummary:
-        """获取最新的Conviction摘要"""
-        # 查询最新的策略执行记录
+        """获取最新的Conviction摘要（只包含成功的执行，排除失败的）"""
+        # 查询最新的策略执行记录（排除失败的）
         stmt = (
             select(StrategyExecution)
             .where(StrategyExecution.user_id == user_id)
@@ -344,16 +397,21 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         execution = result.scalar_one_or_none()
 
         if execution and execution.conviction_score is not None:
-            # 生成简单的摘要消息
             score = execution.conviction_score
-            if score > 50:
-                message = f"Market conditions are favorable. Our squad maintains a bullish stance with {score:.0f}% conviction. Recommended position: Accumulate on dips."
-            elif score > 0:
-                message = f"We're observing mixed signals across our data feeds. Current conviction at {score:.0f}%. Strategy: Hold current positions and monitor for breakout signals."
-            elif score > -50:
-                message = f"Market sentiment is cautiously optimistic. Squad conviction: {score:.0f}%. Strategy execution: Gradual position building over next 48 hours."
+
+            # 优先使用LLM生成的总结
+            if execution.llm_summary:
+                message = execution.llm_summary
             else:
-                message = f"Entering a period of uncertainty. Our conviction has moderated to {score:.0f}%. Risk management protocol activated - maintaining defensive positioning."
+                # 如果没有LLM总结，使用模板消息（fallback）
+                if score > 50:
+                    message = f"Market conditions are favorable. Our squad maintains a bullish stance with {score:.0f}% conviction. Recommended position: Accumulate on dips."
+                elif score > 0:
+                    message = f"We're observing mixed signals across our data feeds. Current conviction at {score:.0f}%. Strategy: Hold current positions and monitor for breakout signals."
+                elif score > -50:
+                    message = f"Market sentiment is cautiously optimistic. Squad conviction: {score:.0f}%. Strategy execution: Gradual position building over next 48 hours."
+                else:
+                    message = f"Entering a period of uncertainty. Our conviction has moderated to {score:.0f}%. Risk management protocol activated - maintaining defensive positioning."
 
             return ConvictionSummary(
                 score=score,
@@ -371,13 +429,29 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
     async def _get_performance_history(
         self, db: AsyncSession, portfolio_id: str
     ) -> PerformanceHistory:
-        """获取性能历史数据（vs BTC/ETH）"""
-        # 获取快照数据
+        """获取账户价值历史数据（最近7天,10分钟粒度）"""
+        from datetime import datetime, timedelta
+
+        # 获取Portfolio信息(需要initial_btc_amount)
+        portfolio_result = await db.execute(
+            select(Portfolio).where(Portfolio.id == portfolio_id)
+        )
+        portfolio = portfolio_result.scalar_one_or_none()
+
+        if not portfolio:
+            return PerformanceHistory(
+                strategy=[], btc_benchmark=[], eth_benchmark=[], dates=[]
+            )
+
+        # 获取最近7天的快照数据
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
         stmt = (
             select(PortfolioSnapshot)
-            .where(PortfolioSnapshot.portfolio_id == portfolio_id)
+            .where(
+                PortfolioSnapshot.portfolio_id == portfolio_id,
+                PortfolioSnapshot.snapshot_time >= seven_days_ago
+            )
             .order_by(PortfolioSnapshot.snapshot_time.asc())
-            .limit(16)
         )
         result = await db.execute(stmt)
         snapshots = result.scalars().all()
@@ -387,34 +461,29 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 strategy=[], btc_benchmark=[], eth_benchmark=[], dates=[]
             )
 
-        # 归一化数据
-        initial_portfolio_value = float(snapshots[0].total_value)
-        initial_btc_price = float(snapshots[0].btc_price) if snapshots[0].btc_price else 1.0
-        initial_eth_price = float(snapshots[0].eth_price) if snapshots[0].eth_price else 1.0
-
         strategy_values = []
         btc_values = []
         eth_values = []
         dates = []
 
         for snapshot in snapshots:
-            # Portfolio归一化
-            portfolio_normalized = (
-                float(snapshot.total_value) / initial_portfolio_value
-            ) * 100
+            # 策略账户价值 (美元)
+            portfolio_value = float(snapshot.total_value)
+            strategy_values.append(round(portfolio_value, 2))
 
-            # BTC归一化
-            btc_price = float(snapshot.btc_price) if snapshot.btc_price else initial_btc_price
-            btc_normalized = (btc_price / initial_btc_price) * 100
+            # BTC基准价值 (美元)
+            # 如果有initial_btc_amount,计算BTC基准价值
+            if portfolio.initial_btc_amount and snapshot.btc_price:
+                btc_value = float(portfolio.initial_btc_amount) * float(snapshot.btc_price)
+                btc_values.append(round(btc_value, 2))
+            else:
+                btc_values.append(round(portfolio_value, 2))  # 默认与策略相同
 
-            # ETH归一化
-            eth_price = float(snapshot.eth_price) if snapshot.eth_price else initial_eth_price
-            eth_normalized = (eth_price / initial_eth_price) * 100
+            # ETH暂不使用,填充0
+            eth_values.append(0)
 
-            strategy_values.append(round(portfolio_normalized, 2))
-            btc_values.append(round(btc_normalized, 2))
-            eth_values.append(round(eth_normalized, 2))
-            dates.append(snapshot.snapshot_time.strftime("%Y-%m"))
+            # 日期时间格式 (精确到分钟)
+            dates.append(snapshot.snapshot_time.strftime("%m/%d %H:%M"))
 
         return PerformanceHistory(
             strategy=strategy_values,
@@ -424,17 +493,21 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         )
 
     async def _get_recent_activities(
-        self, db: AsyncSession, portfolio_id: str, limit: int = 5
+        self, db: AsyncSession, portfolio_id: str, limit: int = 3
     ) -> List[RecentActivity]:
         """获取最近操作记录 - 基于策略执行记录"""
-        # 查询该投资组合的用户ID
+        # 查询该投资组合的用户ID和连续信号计数
         result = await db.execute(
-            select(Portfolio.user_id).where(Portfolio.id == portfolio_id)
+            select(Portfolio).where(Portfolio.id == portfolio_id)
         )
-        user_id = result.scalar_one_or_none()
+        portfolio = result.scalar_one_or_none()
 
-        if not user_id:
+        if not portfolio:
             return []
+
+        user_id = portfolio.user_id
+        bullish_count = portfolio.consecutive_bullish_count or 0
+        bearish_count = portfolio.consecutive_bearish_count or 0
 
         # 查询最近的策略执行记录
         stmt = (
@@ -451,13 +524,13 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # 信号
             signal = execution.signal or "HOLD"
 
-            # 生成动作描述
+            # 生成动作描述（不包含 conviction）
             if signal == "BUY":
-                action = f"Increased BTC position (conviction: {execution.conviction_score:.1f}%)"
+                action = "Increased BTC position"
             elif signal == "SELL":
-                action = f"Reduced BTC position (conviction: {execution.conviction_score:.1f}%)"
+                action = "Reduced BTC position"
             else:  # HOLD
-                action = f"Held position (conviction: {execution.conviction_score:.1f}%)"
+                action = "Held position"
 
             # 查询关联的交易结果
             trade_result = await db.execute(
@@ -477,6 +550,19 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # Agent名称
             agent = "Multi-Agent Squad"
 
+            # 根据信号类型决定显示哪个连续计数
+            # 只在看涨(BUY)或看跌(SELL)时显示，HOLD不显示
+            consecutive_count = None
+            if signal == "BUY" and bullish_count > 0:
+                consecutive_count = bullish_count
+            elif signal == "SELL" and bearish_count > 0:
+                consecutive_count = bearish_count
+
+            # 获取各个Agent的贡献详情（只在成功时获取）
+            agent_contributions = None
+            if execution.status == "completed":
+                agent_contributions = await self._get_agent_contributions(db, str(execution.id))
+
             activity = RecentActivity(
                 date=execution.execution_time.replace(tzinfo=timezone.utc).isoformat(),
                 signal=signal,
@@ -484,16 +570,58 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 result=result_str,
                 agent=agent,
                 execution_id=str(execution.id),  # 始终包含 execution_id
+                conviction_score=execution.conviction_score,  # 添加 conviction_score
+                consecutive_count=consecutive_count,  # 根据signal类型显示对应的连续计数
+                agent_contributions=agent_contributions,  # 添加各Agent的详细信息
+                status=execution.status,  # 执行状态
+                error_details=execution.error_details,  # 错误详情（如果失败）
             )
             activities.append(activity)
 
         return activities
 
+    async def _get_agent_contributions(
+        self, db: AsyncSession, execution_id: str
+    ) -> List[AgentContribution]:
+        """获取策略执行中各个Agent的贡献详情"""
+
+        # 查询该策略执行关联的所有Agent执行记录
+        stmt = (
+            select(AgentExecution)
+            .where(AgentExecution.strategy_execution_id == execution_id)
+            .order_by(AgentExecution.executed_at.desc())
+        )
+        result = await db.execute(stmt)
+        agent_execs = result.scalars().all()
+
+        # Agent显示名称映射
+        agent_display_names = {
+            "macro_agent": "Macro Scout",
+            "ta_agent": "Momentum Scout",
+            "onchain_agent": "Chain Guardian",
+        }
+
+        contributions = []
+        for agent_exec in agent_execs:
+            contribution = AgentContribution(
+                agent_name=agent_exec.agent_name,
+                display_name=agent_display_names.get(agent_exec.agent_name, agent_exec.agent_name),
+                signal=agent_exec.signal,
+                confidence=float(agent_exec.confidence),
+                score=float(agent_exec.score),
+            )
+            contributions.append(contribution)
+
+        # 按agent_name字母顺序排序
+        contributions.sort(key=lambda x: x.agent_name)
+
+        return contributions
+
 
     async def get_execution_detail(
         self, db: AsyncSession, execution_id: str
     ) -> StrategyExecutionDetail:
-        """获取策略执行详情，包括所有agent调用过程"""
+        """获取策略执行详情，包括所有agent调用过程和交易记录"""
         try:
             # 查询策略执行记录
             stmt = (
@@ -532,6 +660,40 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 )
                 agent_executions.append(agent_detail)
 
+            # 查询该执行产生的交易记录
+            from app.models.portfolio import Trade
+            trades_stmt = (
+                select(Trade)
+                .where(Trade.execution_id == execution_id)
+                .order_by(Trade.executed_at)
+            )
+            trades_result = await db.execute(trades_stmt)
+            trades = trades_result.scalars().all()
+
+            # 构建交易响应列表
+            trade_responses = []
+            for trade in trades:
+                trade_response = TradeResponse(
+                    id=str(trade.id),
+                    symbol=trade.symbol,
+                    trade_type=trade.trade_type,
+                    amount=trade.amount,
+                    price=trade.price,
+                    total_value=trade.total_value,
+                    fee=trade.fee,
+                    balance_before=trade.balance_before,
+                    balance_after=trade.balance_after,
+                    holding_before=trade.holding_before,
+                    holding_after=trade.holding_after,
+                    realized_pnl=trade.realized_pnl,
+                    realized_pnl_percent=trade.realized_pnl_percent,
+                    conviction_score=trade.conviction_score,
+                    reason=trade.reason,
+                    executed_at=trade.executed_at,
+                    created_at=trade.created_at,
+                )
+                trade_responses.append(trade_response)
+
             # 构建策略执行详情
             execution_detail = StrategyExecutionDetail(
                 id=str(execution.id),
@@ -546,7 +708,9 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 risk_level=execution.risk_level,
                 execution_duration_ms=execution.execution_duration_ms,
                 error_message=execution.error_message,
+                error_details=execution.error_details,
                 agent_executions=agent_executions,
+                trades=trade_responses,
             )
 
             return execution_detail
@@ -560,7 +724,16 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         db: AsyncSession,
         portfolio_id: str,
         user_id: int,
-        rebalance_period_minutes: int,
+        rebalance_period_minutes: Optional[int] = None,
+        agent_weights: Optional[Dict[str, float]] = None,
+        consecutive_signal_threshold: Optional[int] = None,
+        acceleration_multiplier_min: Optional[float] = None,
+        acceleration_multiplier_max: Optional[float] = None,
+        fg_circuit_breaker_threshold: Optional[int] = None,
+        fg_position_adjust_threshold: Optional[int] = None,
+        buy_threshold: Optional[float] = None,
+        partial_sell_threshold: Optional[float] = None,
+        full_sell_threshold: Optional[float] = None,
     ) -> dict:
         """
         更新策略参数设置
@@ -569,7 +742,16 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             db: 数据库会话
             portfolio_id: 投资组合ID
             user_id: 用户ID
-            rebalance_period_minutes: 策略执行周期（分钟）
+            rebalance_period_minutes: 策略执行周期（分钟）(可选)
+            agent_weights: Agent权重配置 (可选)
+            consecutive_signal_threshold: 连续信号阈值 (可选)
+            acceleration_multiplier_min: 加速乘数最小值 (可选)
+            acceleration_multiplier_max: 加速乘数最大值 (可选)
+            fg_circuit_breaker_threshold: Fear & Greed熔断阈值 (可选)
+            fg_position_adjust_threshold: Fear & Greed仓位调整阈值 (可选)
+            buy_threshold: 买入阈值 (可选)
+            partial_sell_threshold: 部分减仓阈值 (可选)
+            full_sell_threshold: 全部清仓阈值 (可选)
 
         Returns:
             dict: 更新结果
@@ -587,11 +769,56 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             if not portfolio:
                 raise ValueError(f"投资组合不存在或无权限访问: {portfolio_id}")
 
-            # 保存旧周期值
+            # 记录更新前的值
             old_period = portfolio.rebalance_period_minutes
+            old_weights = portfolio.agent_weights
 
-            # 更新策略参数
-            portfolio.rebalance_period_minutes = rebalance_period_minutes
+            updated_fields = []
+
+            # 更新执行周期（如果提供）
+            if rebalance_period_minutes is not None:
+                portfolio.rebalance_period_minutes = rebalance_period_minutes
+                updated_fields.append(f"执行周期: {old_period} -> {rebalance_period_minutes}分钟")
+
+            # 更新Agent权重（如果提供）
+            if agent_weights is not None:
+                portfolio.agent_weights = agent_weights
+                updated_fields.append(f"Agent权重: {old_weights} -> {agent_weights}")
+
+            # 更新连续信号配置（如果提供）
+            if consecutive_signal_threshold is not None:
+                portfolio.consecutive_signal_threshold = consecutive_signal_threshold
+                updated_fields.append(f"连续信号阈值: {consecutive_signal_threshold}")
+
+            if acceleration_multiplier_min is not None:
+                portfolio.acceleration_multiplier_min = acceleration_multiplier_min
+                updated_fields.append(f"加速乘数最小值: {acceleration_multiplier_min}")
+
+            if acceleration_multiplier_max is not None:
+                portfolio.acceleration_multiplier_max = acceleration_multiplier_max
+                updated_fields.append(f"加速乘数最大值: {acceleration_multiplier_max}")
+
+            # 更新交易阈值配置（如果提供）
+            if fg_circuit_breaker_threshold is not None:
+                portfolio.fg_circuit_breaker_threshold = fg_circuit_breaker_threshold
+                updated_fields.append(f"FG熔断阈值: {fg_circuit_breaker_threshold}")
+
+            if fg_position_adjust_threshold is not None:
+                portfolio.fg_position_adjust_threshold = fg_position_adjust_threshold
+                updated_fields.append(f"FG仓位调整阈值: {fg_position_adjust_threshold}")
+
+            if buy_threshold is not None:
+                portfolio.buy_threshold = buy_threshold
+                updated_fields.append(f"买入阈值: {buy_threshold}")
+
+            if partial_sell_threshold is not None:
+                portfolio.partial_sell_threshold = partial_sell_threshold
+                updated_fields.append(f"部分减仓阈值: {partial_sell_threshold}")
+
+            if full_sell_threshold is not None:
+                portfolio.full_sell_threshold = full_sell_threshold
+                updated_fields.append(f"全部清仓阈值: {full_sell_threshold}")
+
             portfolio.updated_at = datetime.utcnow()
 
             await db.commit()
@@ -599,11 +826,11 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
 
             logger.info(
                 f"更新策略设置成功 - 组合: {portfolio.name}, "
-                f"执行周期: {old_period} -> {rebalance_period_minutes} 分钟"
+                f"更新内容: {', '.join(updated_fields) if updated_fields else '无变更'}"
             )
 
-            # 如果策略是活跃的,更新调度任务
-            if portfolio.is_active:
+            # 如果策略是活跃的且执行周期有更新,更新调度任务
+            if portfolio.is_active and rebalance_period_minutes is not None:
                 # 动态导入以避免循环依赖
                 from app.services.strategy.scheduler import strategy_scheduler
 
@@ -616,15 +843,232 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
 
             return {
                 "success": True,
-                "message": f"Strategy settings updated successfully",
+                "message": "策略设置已更新",
                 "portfolio_id": str(portfolio.id),
-                "rebalance_period_minutes": rebalance_period_minutes,
+                "rebalance_period_minutes": portfolio.rebalance_period_minutes,
+                "agent_weights": portfolio.agent_weights,
+                "consecutive_signal_threshold": portfolio.consecutive_signal_threshold,
+                "acceleration_multiplier_min": portfolio.acceleration_multiplier_min,
+                "acceleration_multiplier_max": portfolio.acceleration_multiplier_max,
+                "fg_circuit_breaker_threshold": portfolio.fg_circuit_breaker_threshold,
+                "fg_position_adjust_threshold": portfolio.fg_position_adjust_threshold,
+                "buy_threshold": portfolio.buy_threshold,
+                "partial_sell_threshold": portfolio.partial_sell_threshold,
+                "full_sell_threshold": portfolio.full_sell_threshold,
+                "updated_fields": updated_fields,
             }
 
         except ValueError as e:
             raise
         except Exception as e:
             logger.error(f"更新策略设置失败: {e}", exc_info=True)
+            raise
+
+    async def get_strategy_executions(
+        self, db: AsyncSession, portfolio_id: str, page: int = 1, page_size: int = 50
+    ) -> dict:
+        """
+        获取策略执行历史列表（分页）
+
+        Args:
+            db: 数据库会话
+            portfolio_id: 投资组合ID
+            page: 页码（从1开始）
+            page_size: 每页数量
+
+        Returns:
+            dict: 包含执行历史列表和分页信息
+        """
+        try:
+            # 查询该投资组合的用户ID和连续信号计数
+            result = await db.execute(
+                select(Portfolio).where(Portfolio.id == portfolio_id)
+            )
+            portfolio = result.scalar_one_or_none()
+
+            if not portfolio:
+                raise ValueError(f"Portfolio {portfolio_id} not found")
+
+            user_id = portfolio.user_id
+            bullish_count = portfolio.consecutive_bullish_count or 0
+            bearish_count = portfolio.consecutive_bearish_count or 0
+
+            # 计算偏移量
+            offset = (page - 1) * page_size
+
+            # 查询总数
+            count_stmt = (
+                select(func.count(StrategyExecution.id))
+                .where(StrategyExecution.user_id == user_id)
+            )
+            total_result = await db.execute(count_stmt)
+            total = total_result.scalar_one()
+
+            # 查询策略执行记录（分页）
+            stmt = (
+                select(StrategyExecution)
+                .where(StrategyExecution.user_id == user_id)
+                .order_by(StrategyExecution.execution_time.desc())
+                .offset(offset)
+                .limit(page_size)
+            )
+            result = await db.execute(stmt)
+            executions = result.scalars().all()
+
+            # 转换为响应格式
+            items = []
+            for exe in executions:
+                # 获取对应的交易（如果有）
+                trade_stmt = (
+                    select(Trade)
+                    .where(Trade.execution_id == exe.id)
+                    .where(Trade.portfolio_id == portfolio_id)
+                )
+                trade_result = await db.execute(trade_stmt)
+                trade = trade_result.scalar_one_or_none()
+
+                # 构建活动描述
+                action = "No action taken"
+                result_str = "--"
+
+                if trade:
+                    if trade.trade_type == "BUY":
+                        action = f"Bought {float(trade.amount):.8f} {trade.symbol}"
+                    elif trade.trade_type == "SELL":
+                        action = f"Sold {float(trade.amount):.8f} {trade.symbol}"
+
+                    # 计算结果
+                    if trade.realized_pnl:
+                        result_str = f"+${float(trade.realized_pnl):.2f}" if float(trade.realized_pnl) >= 0 else f"${float(trade.realized_pnl):.2f}"
+                    elif trade.trade_type == "BUY":
+                        result_str = f"${float(trade.total_value):.2f}"
+
+                # 根据信号类型决定显示哪个连续计数
+                # 只在看涨(BUY)或看跌(SELL)时显示，HOLD不显示
+                signal = exe.signal or "HOLD"
+                consecutive_count = None
+                if signal == "BUY" and bullish_count > 0:
+                    consecutive_count = bullish_count
+                elif signal == "SELL" and bearish_count > 0:
+                    consecutive_count = bearish_count
+
+                items.append({
+                    "execution_id": str(exe.id),
+                    "date": exe.execution_time.isoformat(),
+                    "signal": signal,
+                    "action": action,
+                    "result": result_str,
+                    "agent": "Squad",  # 可以根据需要调整
+                    "conviction_score": exe.conviction_score,
+                    "signal_strength": exe.signal_strength,
+                    "consecutive_count": consecutive_count,
+                })
+
+            # 计算分页信息
+            total_pages = (total + page_size - 1) // page_size
+
+            return {
+                "items": items,
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_prev": page > 1,
+            }
+
+        except ValueError as e:
+            raise
+        except Exception as e:
+            logger.error(f"获取策略执行历史失败: {e}", exc_info=True)
+            raise
+
+    async def get_portfolio_trades(
+        self, db: AsyncSession, portfolio_id: str, page: int = 1, page_size: int = 10
+    ) -> dict:
+        """
+        获取投资组合的交易记录（分页）
+
+        Args:
+            db: 数据库会话
+            portfolio_id: Portfolio ID
+            page: 页码（从1开始）
+            page_size: 每页数量
+
+        Returns:
+            分页的交易记录列表
+        """
+        try:
+            from app.models.portfolio import Trade, Portfolio
+            from app.schemas.strategy import TradeResponse
+            from sqlalchemy import func
+
+            # 验证portfolio存在
+            portfolio_result = await db.execute(
+                select(Portfolio).where(Portfolio.id == portfolio_id)
+            )
+            portfolio = portfolio_result.scalar_one_or_none()
+            if not portfolio:
+                raise ValueError(f"Portfolio not found: {portfolio_id}")
+
+            # 计算总数
+            count_stmt = select(func.count()).select_from(Trade).where(
+                Trade.portfolio_id == portfolio_id
+            )
+            total_result = await db.execute(count_stmt)
+            total = total_result.scalar() or 0
+
+            # 计算总页数
+            total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+            # 获取分页数据
+            offset = (page - 1) * page_size
+            trades_stmt = (
+                select(Trade)
+                .where(Trade.portfolio_id == portfolio_id)
+                .order_by(Trade.executed_at.desc())
+                .offset(offset)
+                .limit(page_size)
+            )
+            trades_result = await db.execute(trades_stmt)
+            trades = trades_result.scalars().all()
+
+            # 构建响应
+            trade_responses = []
+            for trade in trades:
+                trade_response = TradeResponse(
+                    id=str(trade.id),
+                    symbol=trade.symbol,
+                    trade_type=trade.trade_type,
+                    amount=trade.amount,
+                    price=trade.price,
+                    total_value=trade.total_value,
+                    fee=trade.fee,
+                    balance_before=trade.balance_before,
+                    balance_after=trade.balance_after,
+                    holding_before=trade.holding_before,
+                    holding_after=trade.holding_after,
+                    realized_pnl=trade.realized_pnl,
+                    realized_pnl_percent=trade.realized_pnl_percent,
+                    conviction_score=trade.conviction_score,
+                    reason=trade.reason,
+                    executed_at=trade.executed_at,
+                    created_at=trade.created_at,
+                )
+                trade_responses.append(trade_response)
+
+            return {
+                "items": trade_responses,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+            }
+
+        except ValueError as e:
+            raise
+        except Exception as e:
+            logger.error(f"获取交易记录失败: {e}", exc_info=True)
             raise
 
 
