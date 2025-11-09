@@ -270,3 +270,4 @@ site/
 # docs
 /docs
 /AMbackend/DEV_docs
+/AMbackend/llm_provider

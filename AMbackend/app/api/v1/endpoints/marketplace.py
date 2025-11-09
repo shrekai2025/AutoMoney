@@ -46,6 +46,7 @@ async def get_marketplace_strategies(
             user_id=filter_user_id,
             risk_level=risk_level,
             sort_by=sort_by,
+            current_user_id=current_user.id,  # 传递当前用户ID用于检查激活状态
         )
         return result
     except Exception as e:

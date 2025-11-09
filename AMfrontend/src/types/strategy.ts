@@ -24,9 +24,11 @@ export interface StrategyCard {
   squad_size: number;
   risk_level: string;
   history: HistoryPoint[];
-  is_active: boolean;            // 策略是否已激活
+  is_active: boolean;            // 策略模板的激活状态（始终为false）
   initial_balance?: number;      // 初始资金
   deployed_at?: string;          // 激活时间
+  user_activated?: boolean;      // 当前用户是否已激活此策略
+  activated_portfolio_id?: string; // 用户激活的Portfolio ID
 }
 
 export interface MarketplaceResponse {

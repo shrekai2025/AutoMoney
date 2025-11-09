@@ -323,22 +323,52 @@ class StrategyScheduler:
                 # 2. 采集市场数据（所有Portfolio共享）
                 market_data = await self._fetch_market_data()
 
-                # 3. 执行一次Agent分析（关键优化点！）
+                # 3. 为第一个Portfolio创建策略执行记录（用于链接Agent执行）
+                logger.info("创建主策略执行记录用于Agent分析")
+                from app.models.strategy_execution import StrategyExecution
+                from app.schemas.strategy import StrategyStatus
+
+                first_portfolio = portfolios[0]
+
+                # 序列化 market_data
+                from app.services.strategy.strategy_orchestrator import StrategyOrchestrator
+                orchestrator = StrategyOrchestrator()
+                serialized_market_data = orchestrator._serialize_for_json(market_data)
+
+                # 创建主执行记录
+                main_execution = StrategyExecution(
+                    user_id=first_portfolio.user_id,
+                    execution_time=datetime.utcnow(),
+                    strategy_name="Multi-Agent Strategy (Batch Shared)",
+                    market_snapshot=serialized_market_data,
+                    status=StrategyStatus.RUNNING.value,
+                )
+                db.add(main_execution)
+                await db.flush()  # 获取 ID
+
+                main_execution_id = str(main_execution.id)
+                logger.info(f"创建主策略执行记录: {main_execution_id}")
+
+                # 4. 执行一次Agent分析（关键优化点！）
                 logger.info("执行Agent分析（所有Portfolio共享此结果）")
                 from app.services.strategy.real_agent_executor import RealAgentExecutor
                 agent_executor = RealAgentExecutor()
 
-                # 使用第一个Portfolio的配置执行Agent（因为所有Portfolio配置相同）
-                first_portfolio = portfolios[0]
+                # 执行Agent并链接到主执行记录
                 agent_outputs, agent_errors = await agent_executor.execute_all_agents(
                     market_data=market_data,
                     db=db,
                     user_id=first_portfolio.user_id,
+                    strategy_execution_id=main_execution_id,  # 链接到主执行记录
                 )
+
+                # 更新主执行记录状态为完成
+                main_execution.status = StrategyStatus.COMPLETED.value
+                await db.commit()
 
                 logger.info(f"Agent分析完成，开始为 {len(portfolios)} 个Portfolio应用结果")
 
-                # 4. 为每个Portfolio应用Agent分析结果
+                # 5. 为每个Portfolio应用Agent分析结果
                 for portfolio in portfolios:
                     try:
                         logger.info(f"为Portfolio执行策略: {portfolio.name} (ID: {portfolio.id})")

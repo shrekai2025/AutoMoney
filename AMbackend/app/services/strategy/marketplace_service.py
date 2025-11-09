@@ -165,61 +165,95 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         user_id: Optional[int] = None,
         risk_level: Optional[str] = None,
         sort_by: str = "return",
+        current_user_id: Optional[int] = None,
     ) -> StrategyMarketplaceListResponse:
-        """获取策略市场列表"""
+        """获取策略市场列表（只显示策略模板，即 is_active=False 的记录）"""
         try:
-            # 查询所有投资组合（包括未激活的，用于展示策略市场）
-            stmt = select(Portfolio)
+            # 查询策略模板：只显示未激活的Portfolio（作为模板）
+            # 每个 strategy_name 只显示一个模板
+            stmt = select(Portfolio).where(Portfolio.is_active == False)
 
-            # 如果指定用户，只返回该用户的组合
+            # 如果指定用户，只返回该用户创建的模板（通常不需要，模板应该是系统级的）
             if user_id:
                 stmt = stmt.where(Portfolio.user_id == user_id)
 
             result = await db.execute(stmt)
             portfolios = result.scalars().all()
 
+            # 如果提供了current_user_id，查询该用户已激活的所有策略
+            user_activated_strategies = {}
+            if current_user_id:
+                activated_stmt = select(Portfolio).where(
+                    Portfolio.user_id == current_user_id,
+                    Portfolio.is_active == True
+                )
+                activated_result = await db.execute(activated_stmt)
+                activated_portfolios = activated_result.scalars().all()
+
+                # 建立 strategy_name -> portfolio_id 的映射
+                for activated in activated_portfolios:
+                    if activated.strategy_name:
+                        user_activated_strategies[activated.strategy_name] = str(activated.id)
+
             strategies = []
             for portfolio in portfolios:
+                # 检查当前用户是否已激活此策略
+                strategy_name = portfolio.strategy_name or ""
+                user_activated = strategy_name in user_activated_strategies
+                activated_portfolio_id = user_activated_strategies.get(strategy_name)
+
+                # 如果用户已激活，使用用户的Portfolio数据；否则使用模板数据
+                data_portfolio = portfolio  # 默认使用模板
+                if user_activated and activated_portfolio_id:
+                    # 查询用户激活的Portfolio
+                    user_portfolio_stmt = select(Portfolio).where(Portfolio.id == activated_portfolio_id)
+                    user_portfolio_result = await db.execute(user_portfolio_stmt)
+                    user_portfolio = user_portfolio_result.scalar_one_or_none()
+                    if user_portfolio:
+                        data_portfolio = user_portfolio
+
                 # 计算天数
-                days = (datetime.now() - portfolio.created_at).days
+                days = (datetime.now() - data_portfolio.created_at).days
                 if days < 1:
                     days = 1
 
                 # 计算年化收益
                 annualized_return = self._calculate_annualized_return(
-                    portfolio.initial_balance, portfolio.total_value, days
+                    data_portfolio.initial_balance, data_portfolio.total_value, days
                 )
 
                 # 映射风险等级
-                mapped_risk_level = self._map_risk_level(portfolio.max_drawdown)
+                mapped_risk_level = self._map_risk_level(data_portfolio.max_drawdown)
 
                 # 风险等级过滤
                 if risk_level and mapped_risk_level != risk_level:
                     continue
 
-                # 获取历史数据
-                history = await self._get_portfolio_history(db, portfolio.id)
+                # 获取历史数据（使用实际数据的Portfolio ID）
+                history = await self._get_portfolio_history(db, data_portfolio.id)
 
                 # 生成标签
-                tags = self._generate_tags(portfolio)
+                tags = self._generate_tags(data_portfolio)
 
                 strategy_card = StrategyMarketplaceCard(
-                    id=str(portfolio.id),
-                    name=portfolio.name,
-                    subtitle=portfolio.strategy_name or "Multi-Agent Strategy",
+                    id=str(portfolio.id),  # 保持模板ID用于识别策略类型
+                    name=data_portfolio.name,
+                    subtitle=data_portfolio.strategy_name or "Multi-Agent Strategy",
                     description=f"Elite AI squad combining macro, onchain and technical analysis",
                     tags=tags,
                     annualized_return=annualized_return,
-                    max_drawdown=portfolio.max_drawdown,
-                    sharpe_ratio=portfolio.sharpe_ratio or 0.0,
-                    pool_size=float(portfolio.total_value),
-                    total_pnl=float(portfolio.total_pnl),
+                    max_drawdown=data_portfolio.max_drawdown,
+                    sharpe_ratio=data_portfolio.sharpe_ratio or 0.0,
+                    pool_size=float(data_portfolio.total_value),
+                    total_pnl=float(data_portfolio.total_pnl),
                     squad_size=3,  # 固定3个Agent
                     risk_level=mapped_risk_level,
                     history=history,
-                    is_active=portfolio.is_active,  # 策略激活状态
-                    initial_balance=float(portfolio.initial_balance) if portfolio.initial_balance else None,
-                    deployed_at=portfolio.created_at.isoformat() if portfolio.is_active else None,
+                    is_active=data_portfolio.is_active,
+                    initial_balance=float(data_portfolio.initial_balance) if data_portfolio.initial_balance else None,
+                    deployed_at=data_portfolio.created_at.isoformat() if data_portfolio.is_active else None,
+                    user_activated=user_activated,  # 当前用户是否已激活
+                    activated_portfolio_id=activated_portfolio_id,  # 用户激活的Portfolio ID
                 )
                 strategies.append(strategy_card)
 
@@ -957,7 +991,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
 
                 items.append({
                     "execution_id": str(exe.id),
-                    "date": exe.execution_time.isoformat(),
+                    "date": exe.execution_time.replace(tzinfo=timezone.utc).isoformat(),  # 标记为UTC时区
                     "signal": signal,
                     "action": action,
                     "result": result_str,
@@ -1082,11 +1116,11 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         initial_balance: float,
     ) -> Dict[str, Any]:
         """
-        部署资金到策略（激活策略）
+        部署资金到策略（克隆策略模板并激活）
 
         Args:
             db: 数据库会话
-            portfolio_id: Portfolio UUID
+            portfolio_id: 策略模板的 Portfolio UUID
             user_id: 用户ID
             initial_balance: 初始资金
 
@@ -1094,56 +1128,79 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             部署结果信息
         """
         try:
-            # 1. 查询Portfolio
+            # 1. 查询策略模板（Portfolio）
             stmt = select(Portfolio).where(Portfolio.id == portfolio_id)
             result = await db.execute(stmt)
-            portfolio = result.scalar_one_or_none()
+            template_portfolio = result.scalar_one_or_none()
 
-            if not portfolio:
-                raise ValueError(f"Strategy not found: {portfolio_id}")
+            if not template_portfolio:
+                raise ValueError(f"Strategy template not found: {portfolio_id}")
 
-            # 2. 验证所有权（可选：如果需要）
-            if portfolio.user_id != user_id:
-                raise ValueError(f"Strategy does not belong to user {user_id}")
-
-            # 3. 检查是否已经激活
-            if portfolio.is_active:
-                raise ValueError(f"Strategy is already active")
-
-            # 4. 验证金额（最小100 USDT）
+            # 2. 验证金额（最小100 USDT）
             if initial_balance < 100:
                 raise ValueError(f"Minimum deposit amount is 100 USDT")
 
-            # 5. 激活策略并设置初始资金
-            portfolio.is_active = True
-            portfolio.initial_balance = Decimal(str(initial_balance))
-            portfolio.current_balance = Decimal(str(initial_balance))
-            portfolio.total_value = Decimal(str(initial_balance))
-            portfolio.updated_at = datetime.now(timezone.utc)
+            # 3. 检查用户是否已经激活过这个策略
+            check_stmt = select(Portfolio).where(
+                Portfolio.user_id == user_id,
+                Portfolio.strategy_name == template_portfolio.strategy_name,
+                Portfolio.is_active == True
+            )
+            check_result = await db.execute(check_stmt)
+            existing = check_result.scalar_one_or_none()
 
+            if existing:
+                raise ValueError(f"You have already activated this strategy")
+
+            # 4. 克隆策略模板创建新的 Portfolio 实例
+            import uuid
+            new_portfolio = Portfolio(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                name=template_portfolio.name,
+                strategy_name=template_portfolio.strategy_name,
+                initial_balance=Decimal(str(initial_balance)),
+                current_balance=Decimal(str(initial_balance)),
+                total_value=Decimal(str(initial_balance)),
+                is_active=True,
+                rebalance_period_minutes=template_portfolio.rebalance_period_minutes,
+                agent_weights=template_portfolio.agent_weights,
+                consecutive_signal_threshold=template_portfolio.consecutive_signal_threshold,
+                acceleration_multiplier_min=template_portfolio.acceleration_multiplier_min,
+                acceleration_multiplier_max=template_portfolio.acceleration_multiplier_max,
+                fg_circuit_breaker_threshold=template_portfolio.fg_circuit_breaker_threshold,
+                fg_position_adjust_threshold=template_portfolio.fg_position_adjust_threshold,
+                buy_threshold=template_portfolio.buy_threshold,
+                partial_sell_threshold=template_portfolio.partial_sell_threshold,
+                full_sell_threshold=template_portfolio.full_sell_threshold,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+
+            db.add(new_portfolio)
             await db.commit()
-            await db.refresh(portfolio)
+            await db.refresh(new_portfolio)
 
-            # 6. 添加到调度器（启动定时执行）
+            # 5. 添加到调度器（启动定时执行）
             try:
                 from app.services.strategy.scheduler import strategy_scheduler
-                await strategy_scheduler.add_portfolio_task(portfolio.id, portfolio.rebalance_period_minutes)
-                logger.info(f"[Deploy] 已将策略 {portfolio.id} 添加到调度器")
+                await strategy_scheduler.add_portfolio_task(new_portfolio.id, new_portfolio.rebalance_period_minutes)
+                logger.info(f"[Deploy] 已将策略 {new_portfolio.id} 添加到调度器")
             except Exception as e:
                 logger.warning(f"[Deploy] 添加调度任务失败（非致命错误）: {e}")
 
             logger.info(
-                f"[Deploy] 成功激活策略: portfolio_id={portfolio_id}, "
-                f"user_id={user_id}, initial_balance={initial_balance}"
+                f"[Deploy] 成功部署策略: template_id={portfolio_id}, "
+                f"new_portfolio_id={new_portfolio.id}, user_id={user_id}, initial_balance={initial_balance}"
             )
 
             return {
                 "success": True,
                 "message": f"Successfully deployed ${initial_balance} to strategy",
-                "portfolio_id": str(portfolio.id),
+                "portfolio_id": str(new_portfolio.id),
                 "amount": initial_balance,
                 "is_active": True,
-                "deployed_at": portfolio.updated_at.isoformat(),
+                "deployed_at": new_portfolio.created_at.isoformat(),
             }
 
         except ValueError as e:

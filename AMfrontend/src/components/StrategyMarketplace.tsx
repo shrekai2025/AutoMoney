@@ -87,17 +87,19 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
 
     setIsActivating(true);
     try {
-      await deployFunds(selectedStrategy.id, amount);
+      const result = await deployFunds(selectedStrategy.id, amount);
 
       toast.success("Strategy Activated!", {
         description: `Successfully deployed $${amount} to ${selectedStrategy.name}`,
       });
 
-      // Reload strategies to get updated state
-      await loadStrategies();
-
       setActivationModalOpen(false);
       setSelectedStrategy(null);
+
+      // Navigate to the newly created portfolio
+      if (result.portfolio_id) {
+        onSelectStrategy(result.portfolio_id);
+      }
     } catch (err) {
       console.error('Failed to activate strategy:', err);
       toast.error("Activation Failed", {
@@ -110,9 +112,9 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
   };
 
   const handleCardClick = (strategy: StrategyCard) => {
-    // Only allow navigation if strategy is active
-    if (strategy.is_active) {
-      onSelectStrategy(strategy.id);
+    // If user has activated this strategy, navigate to their activated portfolio
+    if (strategy.user_activated && strategy.activated_portfolio_id) {
+      onSelectStrategy(strategy.activated_portfolio_id);
     }
   };
   const getRiskColor = (risk: string) => {
@@ -264,7 +266,7 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
             <Card
               key={strategy.id}
               className={`bg-slate-900/50 border-slate-700/50 backdrop-blur-sm transition-all duration-300 group relative overflow-hidden ${
-                strategy.is_active
+                strategy.user_activated
                   ? 'hover:bg-slate-800/70 hover:shadow-xl hover:shadow-purple-500/10 hover:scale-[1.02] cursor-pointer'
                   : 'cursor-default'
               }`}
@@ -272,13 +274,14 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
             >
               <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 via-transparent to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
 
-              {/* Inactive Overlay */}
-              {!strategy.is_active && (
+              {/* Not Activated Overlay - Only show if user hasn't activated this strategy */}
+              {!strategy.user_activated && (
                 <div
-                  className="absolute inset-0 z-10 flex items-center justify-center"
+                  className="absolute inset-0 flex items-center justify-center"
                   style={{
                     backgroundColor: 'rgba(15, 23, 42, 0.95)',
                     backdropFilter: 'blur(4px)',
+                    zIndex: 50,
                   }}
                 >
                   <div className="text-center px-4">
@@ -411,10 +414,10 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
                 <Button
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 border-0 shadow-lg shadow-purple-500/30 group-hover:shadow-purple-500/50 transition-shadow h-7 text-xs"
                   onClick={() => handleCardClick(strategy)}
-                  disabled={!strategy.is_active}
+                  disabled={!strategy.user_activated}
                 >
                   <Users className="w-3 h-3 mr-1.5" />
-                  {strategy.is_active ? "View Details" : "Deploy Squad"}
+                  {strategy.user_activated ? "View Portfolio" : "Deploy Squad"}
                 </Button>
               </CardContent>
             </Card>

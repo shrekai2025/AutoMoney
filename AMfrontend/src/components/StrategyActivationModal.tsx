@@ -113,7 +113,7 @@ export function StrategyActivationModal({
               size="sm"
               onClick={() => handleQuickAmount(100)}
               disabled={isLoading}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+              className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-600"
             >
               $100
             </Button>
@@ -122,7 +122,7 @@ export function StrategyActivationModal({
               size="sm"
               onClick={() => handleQuickAmount(500)}
               disabled={isLoading}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+              className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-600"
             >
               $500
             </Button>
@@ -131,7 +131,7 @@ export function StrategyActivationModal({
               size="sm"
               onClick={() => handleQuickAmount(1000)}
               disabled={isLoading}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+              className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-600"
             >
               $1,000
             </Button>
@@ -140,7 +140,7 @@ export function StrategyActivationModal({
               size="sm"
               onClick={() => handleQuickAmount(5000)}
               disabled={isLoading}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+              className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-600"
             >
               $5,000
             </Button>
@@ -168,7 +168,7 @@ export function StrategyActivationModal({
             variant="outline"
             onClick={onClose}
             disabled={isLoading}
-            className="flex-1 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+            className="flex-1 bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-600"
           >
             Cancel
           </Button>

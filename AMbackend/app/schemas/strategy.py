@@ -284,9 +284,11 @@ class StrategyMarketplaceCard(BaseModel):
     squad_size: int
     risk_level: str
     history: List[HistoryPoint]
-    is_active: bool  # 策略是否已激活（用户是否已部署资金）
+    is_active: bool  # 策略模板的激活状态（模板始终为False）
     initial_balance: Optional[float] = None  # 初始资金
     deployed_at: Optional[str] = None  # 激活/部署时间
+    user_activated: bool = False  # 当前用户是否已激活此策略
+    activated_portfolio_id: Optional[str] = None  # 用户激活的Portfolio ID（如果已激活）
 
 
 class StrategyMarketplaceListResponse(BaseModel):
