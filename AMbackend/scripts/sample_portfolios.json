@@ -1,0 +1,48 @@
+[
+  {
+    "name": "稳健型BTC策略",
+    "strategy_name": "Conservative BTC Strategy",
+    "initial_balance": "10000.00000000",
+    "current_balance": "10000.00000000",
+    "total_value": "10000.00000000",
+    "initial_btc_amount": "0.10000000",
+    "is_active": true,
+    "rebalance_period_minutes": 30,
+    "agent_weights": {
+      "macro": 0.4,
+      "onchain": 0.4,
+      "ta": 0.2
+    },
+    "consecutive_signal_threshold": 30,
+    "acceleration_multiplier_min": 1.1,
+    "acceleration_multiplier_max": 2.0,
+    "fg_circuit_breaker_threshold": 20,
+    "fg_position_adjust_threshold": 30,
+    "buy_threshold": 55.0,
+    "partial_sell_threshold": 50.0,
+    "full_sell_threshold": 45.0
+  },
+  {
+    "name": "激进型BTC策略",
+    "strategy_name": "Aggressive BTC Strategy",
+    "initial_balance": "10000.00000000",
+    "current_balance": "10000.00000000",
+    "total_value": "10000.00000000",
+    "initial_btc_amount": "0.10000000",
+    "is_active": false,
+    "rebalance_period_minutes": 15,
+    "agent_weights": {
+      "macro": 0.25,
+      "onchain": 0.5,
+      "ta": 0.25
+    },
+    "consecutive_signal_threshold": 20,
+    "acceleration_multiplier_min": 1.2,
+    "acceleration_multiplier_max": 2.5,
+    "fg_circuit_breaker_threshold": 15,
+    "fg_position_adjust_threshold": 25,
+    "buy_threshold": 50.0,
+    "partial_sell_threshold": 48.0,
+    "full_sell_threshold": 42.0
+  }
+]
