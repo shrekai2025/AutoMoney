@@ -118,7 +118,8 @@ async def get_user_id():
             return None
 
 
-if __name__ == "__main__":
+async def main():
+    """主函数"""
     import sys
 
     # 检查命令行参数
@@ -134,9 +135,13 @@ if __name__ == "__main__":
             sys.exit(1)
     else:
         # 自动获取第一个用户ID
-        user_id = asyncio.run(get_user_id())
+        user_id = await get_user_id()
         if not user_id:
             sys.exit(1)
 
     # 执行导入
-    asyncio.run(import_portfolios(user_id))
+    await import_portfolios(user_id)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
