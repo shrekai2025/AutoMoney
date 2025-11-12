@@ -107,16 +107,16 @@ async def get_all_strategies(
                 id=str(portfolio.id),
                 user_id=portfolio.user_id,
                 name=portfolio.name,
-                strategy_name=portfolio.strategy_name or "Unknown",
+                strategy_name=portfolio.instance_name or "Unknown",
                 is_active=portfolio.is_active,
                 total_value=float(portfolio.total_value),
                 total_pnl=float(portfolio.total_pnl),
                 total_pnl_percent=portfolio.total_pnl_percent,
-                rebalance_period_minutes=portfolio.rebalance_period_minutes,
-                agent_weights=portfolio.agent_weights,
-                consecutive_signal_threshold=portfolio.consecutive_signal_threshold,
-                acceleration_multiplier_min=portfolio.acceleration_multiplier_min,
-                acceleration_multiplier_max=portfolio.acceleration_multiplier_max,
+                rebalance_period_minutes=portfolio.instance_params.get("rebalance_period_minutes", 10) if portfolio.instance_params else 10,
+                agent_weights=portfolio.instance_params.get("agent_weights", {}) if portfolio.instance_params else {},
+                consecutive_signal_threshold=portfolio.instance_params.get("consecutive_signal_threshold", 3) if portfolio.instance_params else 3,
+                acceleration_multiplier_min=portfolio.instance_params.get("acceleration_multiplier_min", 1.1) if portfolio.instance_params else 1.1,
+                acceleration_multiplier_max=portfolio.instance_params.get("acceleration_multiplier_max", 2.0) if portfolio.instance_params else 2.0,
                 created_at=portfolio.created_at.isoformat(),
                 updated_at=portfolio.updated_at.isoformat() if portfolio.updated_at else None,
             )
@@ -174,7 +174,7 @@ async def toggle_strategy(
             strategy_scheduler.add_portfolio_job(
                 portfolio_id=str(portfolio.id),
                 portfolio_name=portfolio.name,
-                period_minutes=portfolio.rebalance_period_minutes,
+                period_minutes=portfolio.instance_params.get("rebalance_period_minutes", 10) if portfolio.instance_params else 10,
             )
             logger.info(f"已为激活的策略添加定时任务: {portfolio.name}")
 

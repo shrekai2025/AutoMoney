@@ -192,13 +192,13 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
 
                 # 建立 strategy_name -> portfolio_id 的映射
                 for activated in activated_portfolios:
-                    if activated.strategy_name:
-                        user_activated_strategies[activated.strategy_name] = str(activated.id)
+                    if activated.instance_name:
+                        user_activated_strategies[activated.instance_name] = str(activated.id)
 
             strategies = []
             for portfolio in portfolios:
                 # 检查当前用户是否已激活此策略
-                strategy_name = portfolio.strategy_name or ""
+                strategy_name = portfolio.instance_name or ""
                 user_activated = strategy_name in user_activated_strategies
                 activated_portfolio_id = user_activated_strategies.get(strategy_name)
 
@@ -238,7 +238,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 strategy_card = StrategyMarketplaceCard(
                     id=str(portfolio.id),  # 保持模板ID用于识别策略类型
                     name=data_portfolio.name,
-                    subtitle=data_portfolio.strategy_name or "Multi-Agent Strategy",
+                    subtitle=data_portfolio.instance_name or "Multi-Agent Strategy",
                     description=f"Elite AI squad combining macro, onchain and technical analysis",
                     tags=tags,
                     annualized_return=annualized_return,
@@ -1143,7 +1143,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # 3. 检查用户是否已经激活过这个策略
             check_stmt = select(Portfolio).where(
                 Portfolio.user_id == user_id,
-                Portfolio.strategy_name == template_portfolio.strategy_name,
+                Portfolio.strategy_name == template_portfolio.instance_name,
                 Portfolio.is_active == True
             )
             check_result = await db.execute(check_stmt)
@@ -1158,7 +1158,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 id=uuid.uuid4(),
                 user_id=user_id,
                 name=template_portfolio.name,
-                strategy_name=template_portfolio.strategy_name,
+                strategy_name=template_portfolio.instance_name,
                 initial_balance=Decimal(str(initial_balance)),
                 current_balance=Decimal(str(initial_balance)),
                 total_value=Decimal(str(initial_balance)),
