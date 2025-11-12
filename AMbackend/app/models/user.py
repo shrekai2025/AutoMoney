@@ -15,7 +15,7 @@ class User(Base, TimestampMixin):
     avatar_url = Column(String(512), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
-    role = Column(String(20), default="user", nullable=False, index=True)  # 'user' or 'admin'
+    role = Column(String(20), default="user", nullable=False, index=True)  # 'user', 'trader', or 'admin'
 
     # Relationships
     agent_executions = relationship("AgentExecution", back_populates="user", cascade="all, delete-orphan")

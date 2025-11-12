@@ -10,12 +10,26 @@ from app.models.base import Base
 
 
 class Portfolio(Base):
-    """投资组合"""
+    """策略实例（投资组合）
+    
+    用户/交易员基于策略模板创建的可运行策略实例
+    """
     __tablename__ = "portfolios"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
-    name = Column(String(100), nullable=False)
+    strategy_definition_id = Column(Integer, ForeignKey("strategy_definitions.id"), nullable=False, index=True, 
+                                    comment="关联的策略模板ID")
+    
+    # 实例标识
+    instance_name = Column(String(200), nullable=False, comment="实例名称，用户自定义")
+    instance_description = Column(Text, nullable=True, comment="实例描述，用户可选")
+    
+    # 实例参数（从模板复制而来，独立修改）
+    instance_params = Column(JSONB, nullable=False, comment="实例独立参数配置")
+    
+    # 保留旧的name字段用于向后兼容（迁移后可考虑移除）
+    name = Column(String(100), nullable=True)
 
     # 账户余额
     initial_balance = Column(NUMERIC(20, 8), nullable=False)
@@ -36,30 +50,16 @@ class Portfolio(Base):
     max_drawdown = Column(Float, server_default='0')
     sharpe_ratio = Column(Float)
 
-    is_active = Column(Boolean, server_default='true')
-    strategy_name = Column(String(100))
-
-    # 策略参数
-    rebalance_period_minutes = Column(Integer, server_default='10', nullable=False)  # 策略执行周期（分钟）
-    last_execution_time = Column(TIMESTAMP, nullable=True)  # 上次执行时间
-    agent_weights = Column(JSONB, nullable=True)  # Agent权重配置 {"macro": 0.40, "onchain": 0.40, "ta": 0.20}
-
-    # 连续信号机制配置
-    consecutive_bullish_count = Column(Integer, server_default='0', nullable=False)  # 当前连续看涨信号次数
-    consecutive_bullish_since = Column(TIMESTAMP, nullable=True)  # 连续看涨开始时间
-    consecutive_bearish_count = Column(Integer, server_default='0', nullable=False)  # 当前连续看跌信号次数
-    consecutive_bearish_since = Column(TIMESTAMP, nullable=True)  # 连续看跌开始时间
-    last_conviction_score = Column(Float, nullable=True)  # 上次信念分数
-    consecutive_signal_threshold = Column(Integer, server_default='30', nullable=False)  # 连续信号阈值（触发加速）
-    acceleration_multiplier_min = Column(Float, server_default='1.1', nullable=False)  # 加速乘数最小值
-    acceleration_multiplier_max = Column(Float, server_default='2.0', nullable=False)  # 加速乘数最大值
-
-    # 交易阈值配置
-    fg_circuit_breaker_threshold = Column(Integer, server_default='20', nullable=False)  # Fear & Greed熔断阈值 (< 此值暂停交易)
-    fg_position_adjust_threshold = Column(Integer, server_default='30', nullable=False)  # Fear & Greed仓位调整阈值 (< 此值减少仓位)
-    buy_threshold = Column(Float, server_default='50', nullable=False)  # 买入阈值 (Conviction Score >= 此值买入)
-    partial_sell_threshold = Column(Float, server_default='50', nullable=False)  # 部分减仓阈值 (Conviction Score 介于此值和full_sell之间部分减仓)
-    full_sell_threshold = Column(Float, server_default='45', nullable=False)  # 全部清仓阈值 (Conviction Score < 此值全部清仓)
+    # 状态
+    is_active = Column(Boolean, server_default='true', comment="实例开关")
+    
+    # 运行时状态（保留，因为是动态变化的）
+    last_execution_time = Column(TIMESTAMP, nullable=True, comment="上次执行时间")
+    consecutive_bullish_count = Column(Integer, server_default='0', nullable=False, comment="当前连续看涨信号次数")
+    consecutive_bullish_since = Column(TIMESTAMP, nullable=True, comment="连续看涨开始时间")
+    consecutive_bearish_count = Column(Integer, server_default='0', nullable=False, comment="当前连续看跌信号次数")
+    consecutive_bearish_since = Column(TIMESTAMP, nullable=True, comment="连续看跌开始时间")
+    last_conviction_score = Column(Float, nullable=True, comment="上次信念分数")
 
     # 基准对比参数
     initial_btc_amount = Column(NUMERIC(20, 8), nullable=True)  # 初始BTC数量(用于基准对比)
@@ -69,6 +69,7 @@ class Portfolio(Base):
 
     # Relationships
     user = relationship("User", back_populates="portfolios")
+    strategy_definition = relationship("StrategyDefinition", back_populates="portfolios")
     holdings = relationship("PortfolioHolding", back_populates="portfolio", cascade="all, delete-orphan")
     trades = relationship("Trade", back_populates="portfolio", cascade="all, delete-orphan")
     snapshots = relationship("PortfolioSnapshot", back_populates="portfolio", cascade="all, delete-orphan")
@@ -76,10 +77,11 @@ class Portfolio(Base):
     __table_args__ = (
         Index('idx_portfolios_user', 'user_id'),
         Index('idx_portfolios_active', 'is_active', 'user_id'),
+        Index('idx_portfolios_definition', 'strategy_definition_id'),
     )
 
     def __repr__(self):
-        return f"<Portfolio(id={self.id}, name={self.name}, user_id={self.user_id})>"
+        return f"<Portfolio(id={self.id}, instance_name={self.instance_name}, user_id={self.user_id})>"
 
 
 class PortfolioHolding(Base):

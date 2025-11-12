@@ -174,3 +174,26 @@ async def get_current_admin_user(
             detail="Admin access required",
         )
     return current_user
+
+
+async def get_current_trader_or_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    Get current trader or admin user
+
+    Args:
+        current_user: Current user from get_current_user
+
+    Returns:
+        Current user (trader or admin)
+
+    Raises:
+        HTTPException: If user is neither trader nor admin
+    """
+    if current_user.role not in ["trader", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Trader or Admin access required",
+        )
+    return current_user

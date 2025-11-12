@@ -2,7 +2,17 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, market_data, research, portfolio, strategy, trades, marketplace, admin
+from app.api.v1.endpoints import (
+    auth, 
+    market_data, 
+    research, 
+    portfolio, 
+    strategy, 
+    trades, 
+    marketplace, 
+    admin,
+    strategy_definitions,
+)
 
 
 api_router = APIRouter()
@@ -54,4 +64,10 @@ api_router.include_router(
     admin.router,
     prefix="/admin",
     tags=["admin"],
+)
+
+api_router.include_router(
+    strategy_definitions.router,
+    prefix="/strategy-definitions",
+    tags=["strategy-definitions"],
 )
