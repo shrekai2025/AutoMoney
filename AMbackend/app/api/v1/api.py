@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     marketplace, 
     admin,
     strategy_definitions,
+    strategy_instances,
 )
 
 
@@ -70,4 +71,10 @@ api_router.include_router(
     strategy_definitions.router,
     prefix="/strategy-definitions",
     tags=["strategy-definitions"],
+)
+
+api_router.include_router(
+    strategy_instances.router,
+    prefix="/strategies",
+    tags=["strategies"],
 )

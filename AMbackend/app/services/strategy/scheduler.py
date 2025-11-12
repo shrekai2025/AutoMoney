@@ -291,25 +291,29 @@ class StrategyScheduler:
 
     async def batch_execute_strategies_job(self):
         """
-        批量执行所有活跃策略 - 成本优化版本
+        批量执行所有活跃策略 - 按策略模板分组优化版本
 
         工作流程:
-        1. 获取所有活跃Portfolio
-        2. 执行一次Agent分析（所有Portfolio共享）
-        3. 为每个Portfolio应用分析结果并执行交易
+        1. 获取所有活跃Portfolio，按strategy_definition_id分组
+        2. 遍历每个策略模板组
+        3. 每组执行一次Agent分析（组内Portfolio共享）
+        4. 为组内每个Portfolio执行决策和交易
 
         成本优化:
-        - LLM调用次数: 从 N次 降至 1次 (N = Portfolio数量)
-        - 适用场景: 所有Portfolio使用相同的策略配置
+        - 相同机制的策略共享Agent分析结果
+        - LLM调用次数: 从 N次 降至 M次 (M = 策略模板数量)
         """
-        logger.info("开始批量执行策略（共享Agent分析）")
+        logger.info("开始批量执行策略（按模板分组）")
 
         try:
             async with self.SessionLocal() as db:
-                # 1. 获取所有活跃的Portfolio
+                # 1. 获取所有活跃的Portfolio（with strategy_definition）
                 result = await db.execute(
                     select(Portfolio)
-                    .options(selectinload(Portfolio.holdings))
+                    .options(
+                        selectinload(Portfolio.holdings),
+                        selectinload(Portfolio.strategy_definition)
+                    )
                     .where(Portfolio.is_active == True)
                 )
                 portfolios = result.scalars().all()
@@ -318,89 +322,103 @@ class StrategyScheduler:
                     logger.info("没有活跃的Portfolio，跳过批量执行")
                     return
 
-                logger.info(f"找到 {len(portfolios)} 个活跃Portfolio，开始共享执行")
-
-                # 2. 采集市场数据（所有Portfolio共享）
-                market_data = await self._fetch_market_data()
-
-                # 3. 为第一个Portfolio创建策略执行记录（用于链接Agent执行）
-                logger.info("创建主策略执行记录用于Agent分析")
-                from app.models.strategy_execution import StrategyExecution
-                from app.schemas.strategy import StrategyStatus
-
-                first_portfolio = portfolios[0]
-
-                # 序列化 market_data
-                from app.services.strategy.strategy_orchestrator import StrategyOrchestrator
-                orchestrator = StrategyOrchestrator()
-                serialized_market_data = orchestrator._serialize_for_json(market_data)
-
-                # 创建主执行记录
-                main_execution = StrategyExecution(
-                    user_id=first_portfolio.user_id,
-                    execution_time=datetime.utcnow(),
-                    strategy_name="Multi-Agent Strategy (Batch Shared)",
-                    market_snapshot=serialized_market_data,
-                    status=StrategyStatus.RUNNING.value,
-                )
-                db.add(main_execution)
-                await db.flush()  # 获取 ID
-
-                main_execution_id = str(main_execution.id)
-                logger.info(f"创建主策略执行记录: {main_execution_id}")
-
-                # 4. 执行一次Agent分析（关键优化点！）
-                logger.info("执行Agent分析（所有Portfolio共享此结果）")
-                from app.services.strategy.real_agent_executor import RealAgentExecutor
-                agent_executor = RealAgentExecutor()
-
-                # 执行Agent并链接到主执行记录
-                agent_outputs, agent_errors = await agent_executor.execute_all_agents(
-                    market_data=market_data,
-                    db=db,
-                    user_id=first_portfolio.user_id,
-                    strategy_execution_id=main_execution_id,  # 链接到主执行记录
-                )
-
-                # 更新主执行记录状态为完成
-                main_execution.status = StrategyStatus.COMPLETED.value
-                await db.commit()
-
-                logger.info(f"Agent分析完成，开始为 {len(portfolios)} 个Portfolio应用结果")
-
-                # 5. 为每个Portfolio应用Agent分析结果
+                # 2. 按strategy_definition_id分组
+                from collections import defaultdict
+                portfolios_by_definition = defaultdict(list)
+                
                 for portfolio in portfolios:
-                    try:
-                        logger.info(f"为Portfolio执行策略: {portfolio.name} (ID: {portfolio.id})")
-
-                        # 使用共享的agent_outputs执行策略
-                        execution = await strategy_orchestrator.execute_strategy(
-                            db=db,
-                            user_id=portfolio.user_id,
-                            portfolio_id=str(portfolio.id),
-                            market_data=market_data,
-                            agent_outputs=agent_outputs,  # 使用共享的分析结果
-                        )
-
-                        # 更新执行时间
-                        portfolio.last_execution_time = datetime.utcnow()
-                        await db.commit()
-
-                        logger.info(
-                            f"Portfolio执行完成 - {portfolio.name}, "
-                            f"信号: {execution.signal}, 状态: {execution.status}"
-                        )
-
-                    except Exception as e:
-                        logger.error(
-                            f"Portfolio执行失败: {portfolio.name} - {e}",
-                            exc_info=True
-                        )
-                        await db.rollback()
+                    if portfolio.strategy_definition_id:
+                        portfolios_by_definition[portfolio.strategy_definition_id].append(portfolio)
+                    else:
+                        # 旧数据，跳过或使用旧逻辑
+                        logger.warning(f"Portfolio {portfolio.id} 未关联策略模板，跳过")
 
                 logger.info(
-                    f"批量执行完成 - 共 {len(portfolios)} 个Portfolio, "
-                    f"Agent调用: 1次 (节省 {len(portfolios)-1} 次LLM调用)"
+                    f"找到 {len(portfolios)} 个活跃Portfolio，"
+                    f"分为 {len(portfolios_by_definition)} 个策略模板组"
+                )
+
+                # 3. 遍历每个策略模板组
+                total_agent_calls = 0
+                for definition_id, group_portfolios in portfolios_by_definition.items():
+                    logger.info(
+                        f"\n{'='*60}\n"
+                        f"执行策略模板组: ID={definition_id}, "
+                        f"实例数={len(group_portfolios)}\n"
+                        f"{'='*60}"
+                    )
+                    
+                    # 3.1 获取策略定义
+                    definition = group_portfolios[0].strategy_definition
+                    if not definition:
+                        logger.error(f"策略模板 {definition_id} 不存在，跳过")
+                        continue
+                    
+                    logger.info(
+                        f"策略模板: {definition.display_name}, "
+                        f"业务Agent: {definition.business_agents}"
+                    )
+                    
+                    # 3.2 采集市场数据（组内共享）
+                    market_data = await self._fetch_market_data()
+                    
+                    # 3.3 执行一次Agent分析（关键优化！组内共享）
+                    logger.info(f"执行Agent分析（组内 {len(group_portfolios)} 个实例共享）")
+                    
+                    from app.services.strategy.real_agent_executor import RealAgentExecutor
+                    agent_executor = RealAgentExecutor()
+                    
+                    agent_outputs, agent_errors = await agent_executor.execute_all_agents(
+                        market_data=market_data,
+                        db=db,
+                        user_id=group_portfolios[0].user_id,
+                        strategy_execution_id=None,  # 批量执行不链接到特定execution
+                    )
+                    
+                    total_agent_calls += 1
+                    logger.info(f"✅ Agent分析完成（第{total_agent_calls}次调用）")
+                    
+                    # 3.4 为组内每个Portfolio执行决策和交易
+                    for portfolio in group_portfolios:
+                        try:
+                            logger.info(
+                                f"执行实例: {portfolio.instance_name} (ID: {portfolio.id})"
+                            )
+
+                            # 使用共享的agent_outputs执行策略
+                            execution = await strategy_orchestrator.execute_strategy(
+                                db=db,
+                                user_id=portfolio.user_id,
+                                portfolio_id=str(portfolio.id),
+                                market_data=market_data,
+                                agent_outputs=agent_outputs,  # 共享的分析结果
+                            )
+
+                            # 更新执行时间
+                            portfolio.last_execution_time = datetime.utcnow()
+                            await db.commit()
+
+                            logger.info(
+                                f"✅ 实例执行完成 - {portfolio.instance_name}, "
+                                f"信号: {execution.signal}, 状态: {execution.status}"
+                            )
+
+                        except Exception as e:
+                            logger.error(
+                                f"❌ 实例执行失败: {portfolio.instance_name} - {e}",
+                                exc_info=True
+                            )
+                            await db.rollback()
+                            # 继续下一个实例
+
+                logger.info(
+                    f"\n{'='*60}\n"
+                    f"批量执行完成汇总:\n"
+                    f"  - 策略模板数: {len(portfolios_by_definition)}\n"
+                    f"  - 实例总数: {len(portfolios)}\n"
+                    f"  - Agent调用次数: {total_agent_calls}\n"
+                    f"  - 节省LLM调用: {len(portfolios) - total_agent_calls} 次\n"
+                    f"{'='*60}"
                 )
 
         except Exception as e:

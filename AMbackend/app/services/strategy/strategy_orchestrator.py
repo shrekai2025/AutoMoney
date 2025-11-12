@@ -2,9 +2,9 @@
 
 完整的策略执行流程:
 1. 采集市场数据
-2. 执行 3 个 Agent (Macro, OnChain, TA)
-3. 计算信念分数
-4. 生成交易信号
+2. 执行业务Agent (根据策略定义)
+3. 动态加载决策Agent
+4. 生成交易决策
 5. 执行 Paper Trading
 6. 记录策略执行结果
 """
@@ -13,17 +13,13 @@ from typing import Optional, Dict, Any
 from decimal import Decimal
 from datetime import datetime
 import logging
+import importlib
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models import StrategyExecution, Portfolio
-from app.schemas.strategy import TradeType, StrategyStatus
-from app.services.decision.conviction_calculator import (
-    ConvictionCalculator,
-    ConvictionInput,
-)
-from app.services.decision.signal_generator import SignalGenerator, TradeSignal
+from app.models import StrategyExecution, Portfolio, StrategyDefinition
+from app.schemas.strategy import TradeType, StrategyStatus, TradeSignal
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.portfolio_service import portfolio_service
 from app.services.strategy.real_agent_executor import real_agent_executor
@@ -34,14 +30,37 @@ logger = logging.getLogger(__name__)
 
 class StrategyOrchestrator:
     """
-    策略编排器
+    策略编排器（重构版）
 
-    负责完整的策略执行流程，整合所有组件
+    负责完整的策略执行流程，支持：
+    - 从strategy_definition动态加载决策Agent
+    - 从instance_params读取策略参数
+    - 支持多种策略模板
     """
 
     def __init__(self):
-        self.conviction_calculator = ConvictionCalculator()
-        self.signal_generator = SignalGenerator()
+        pass  # 不再持有固定的calculator和generator
+    
+    def _load_decision_agent(self, strategy_definition: StrategyDefinition):
+        """
+        动态加载决策Agent
+        
+        Args:
+            strategy_definition: 策略模板
+            
+        Returns:
+            决策Agent实例
+        """
+        try:
+            module = importlib.import_module(strategy_definition.decision_agent_module)
+            agent_class = getattr(module, strategy_definition.decision_agent_class)
+            return agent_class()
+        except Exception as e:
+            logger.error(
+                f"加载决策Agent失败: {strategy_definition.decision_agent_module}."
+                f"{strategy_definition.decision_agent_class}, 错误: {e}"
+            )
+            raise ValueError(f"Failed to load decision agent: {str(e)}")
 
     @staticmethod
     def _serialize_for_json(obj: Any) -> Any:
@@ -93,16 +112,25 @@ class StrategyOrchestrator:
         execution_start = datetime.utcnow()
 
         try:
-            # 获取投资组合 (with eager loading of holdings)
+            # 获取投资组合 (with eager loading of holdings and strategy_definition)
             result = await db.execute(
                 select(Portfolio)
-                .options(selectinload(Portfolio.holdings))
+                .options(
+                    selectinload(Portfolio.holdings),
+                    selectinload(Portfolio.strategy_definition)
+                )
                 .where(Portfolio.id == portfolio_id)
             )
             portfolio = result.scalar_one_or_none()
 
             if not portfolio:
                 raise ValueError(f"投资组合不存在: {portfolio_id}")
+            
+            if not portfolio.strategy_definition:
+                raise ValueError(f"投资组合{portfolio_id}未关联策略模板")
+            
+            strategy_definition = portfolio.strategy_definition
+            logger.info(f"执行策略: {strategy_definition.display_name} (实例: {portfolio.instance_name})")
 
             # Step 1: 先创建策略执行记录（占位），获取 ID
             serialized_market_data = self._serialize_for_json(market_data)
@@ -157,72 +185,78 @@ class StrategyOrchestrator:
                     await db.commit()
                     return strategy_execution
 
-            # Step 3: 计算信念分数
-            conviction_input = ConvictionInput(
-                macro_output=agent_outputs.get("macro", {}),
-                ta_output=agent_outputs.get("ta", {}),
-                onchain_output=agent_outputs.get("onchain", {}),
-                market_data=market_data,
-            )
-
-            # 使用Portfolio配置的agent_weights，如果没有配置则使用默认权重
-            custom_weights = portfolio.agent_weights if portfolio.agent_weights else None
-            conviction_result = self.conviction_calculator.calculate(
-                conviction_input,
-                custom_weights=custom_weights
-            )
+            # Step 3: 加载决策Agent（动态）
+            decision_agent = self._load_decision_agent(strategy_definition)
+            logger.info(f"已加载决策Agent: {strategy_definition.decision_agent_class}")
 
             # Step 4: 计算当前仓位
             current_position = await self._calculate_position_ratio(portfolio, market_data)
 
-            # Step 5: 准备连续信号状态和交易阈值配置
+            # Step 5: 准备portfolio运行时状态
             portfolio_state = {
                 "consecutive_bullish_count": portfolio.consecutive_bullish_count or 0,
+                "consecutive_bearish_count": portfolio.consecutive_bearish_count or 0,
                 "last_conviction_score": portfolio.last_conviction_score,
-                "consecutive_signal_threshold": portfolio.consecutive_signal_threshold or 30,
-                "acceleration_multiplier_min": portfolio.acceleration_multiplier_min or 1.1,
-                "acceleration_multiplier_max": portfolio.acceleration_multiplier_max or 2.0,
-                # 交易阈值配置
-                "fg_circuit_breaker_threshold": portfolio.fg_circuit_breaker_threshold or 20,
-                "fg_position_adjust_threshold": portfolio.fg_position_adjust_threshold or 30,
-                "buy_threshold": portfolio.buy_threshold or 50,
-                "partial_sell_threshold": portfolio.partial_sell_threshold or 50,
-                "full_sell_threshold": portfolio.full_sell_threshold or 45,
             }
 
-            # Step 6: 生成交易信号
-            signal_result = self.signal_generator.generate_signal(
-                conviction_score=conviction_result.score,
+            # Step 6: 使用决策Agent生成决策（整合了信念分数计算和信号生成）
+            decision_result = decision_agent.decide(
+                agent_outputs=agent_outputs,
                 market_data=market_data,
-                current_position=current_position,
+                instance_params=portfolio.instance_params,  # 从instance_params读取参数
                 portfolio_state=portfolio_state,
+                current_position=current_position,
+            )
+            
+            conviction_score = decision_result["conviction_score"]
+            signal = decision_result["signal"]
+            signal_strength = decision_result["signal_strength"]
+            position_size = decision_result["position_size"]
+            risk_level = decision_result["risk_level"]
+            should_execute = decision_result["should_execute"]
+            reasons = decision_result["reasons"]
+            warnings = decision_result["warnings"]
+            
+            logger.info(
+                f"决策完成: signal={signal}, conviction={conviction_score:.2f}, "
+                f"position_size={position_size:.4f}, should_execute={should_execute}"
             )
 
             # Step 7: 更新连续信号计数器
             await self._update_consecutive_signals(
                 portfolio=portfolio,
-                conviction_score=conviction_result.score,
-                signal=signal_result.signal,
+                conviction_score=conviction_score,
+                signal=signal,
             )
 
             # Step 8: 更新策略执行记录的信号信息
-            strategy_execution.conviction_score = conviction_result.score
-            strategy_execution.signal = signal_result.signal.value
-            strategy_execution.signal_strength = signal_result.signal_strength
-            strategy_execution.position_size = signal_result.position_size
-            strategy_execution.risk_level = signal_result.risk_level.value
+            strategy_execution.conviction_score = conviction_score
+            strategy_execution.signal = signal.value if hasattr(signal, 'value') else str(signal)
+            strategy_execution.signal_strength = signal_strength
+            strategy_execution.position_size = position_size
+            strategy_execution.risk_level = risk_level.value if hasattr(risk_level, 'value') else str(risk_level)
 
             # Step 9: 执行交易（如果需要）
             trade = None
-            if signal_result.should_execute and signal_result.signal != TradeSignal.HOLD:
+            if should_execute and signal != TradeSignal.HOLD:
                 try:
+                    # 构建signal_result结构（为了兼容_execute_trade）
+                    class SignalResult:
+                        def __init__(self, signal, position_size, signal_strength, reasons):
+                            self.signal = signal
+                            self.position_size = position_size
+                            self.signal_strength = signal_strength
+                            self.reasons = reasons
+                    
+                    signal_result = SignalResult(signal, position_size, signal_strength, reasons)
+                    
                     trade = await self._execute_trade(
                         db=db,
                         portfolio=portfolio,
                         signal_result=signal_result,
                         market_data=market_data,
                         strategy_execution_id=str(strategy_execution.id),
-                        conviction_score=conviction_result.score,
+                        conviction_score=conviction_score,
                     )
 
                 except Exception as e:
@@ -242,10 +276,11 @@ class StrategyOrchestrator:
             # Step 10.5: 生成LLM总结
             try:
                 # 构建详细的问题描述，让LLM生成专业的市场分析总结
+                signal_str = signal.value if hasattr(signal, 'value') else str(signal)
                 summary_question = (
                     f"As the squad manager of this trading strategy, provide a comprehensive market outlook "
-                    f"based on our latest analysis. Our conviction score is {conviction_result.score:.1f}% "
-                    f"with a {signal_result.signal.value} signal. Synthesize the insights from all agents "
+                    f"based on our latest analysis. Our conviction score is {conviction_score:.1f}% "
+                    f"with a {signal_str} signal. Synthesize the insights from all agents "
                     f"into a professional, actionable market summary for our investors (3-5 sentences). "
                     f"Focus on key market drivers, risk factors, and our strategic positioning."
                 )
@@ -264,12 +299,13 @@ class StrategyOrchestrator:
             except Exception as e:
                 logger.warning(f"LLM总结生成失败: {e}，使用默认消息")
                 # 如果LLM调用失败，生成专业的默认消息
-                signal_desc = "bullish" if signal_result.signal.value == "BUY" else "bearish" if signal_result.signal.value == "SELL" else "neutral"
-                conviction_desc = "high" if conviction_result.score > 70 else "moderate" if conviction_result.score > 40 else "low"
+                signal_str = signal.value if hasattr(signal, 'value') else str(signal)
+                signal_desc = "bullish" if signal_str == "BUY" else "bearish" if signal_str == "SELL" else "neutral"
+                conviction_desc = "high" if conviction_score > 70 else "moderate" if conviction_score > 40 else "low"
 
                 strategy_execution.llm_summary = (
                     f"Our squad analysis indicates a {signal_desc} outlook with {conviction_desc} conviction "
-                    f"({conviction_result.score:.1f}%). Signal: {signal_result.signal.value}. "
+                    f"({conviction_score:.1f}%). Signal: {signal_str}. "
                     f"All agents have completed their analysis. Please check individual agent insights "
                     f"for detailed market perspectives."
                 )
@@ -287,8 +323,8 @@ class StrategyOrchestrator:
 
             logger.info(
                 f"策略执行完成 - ID: {strategy_execution.id}, "
-                f"信号: {signal_result.signal.value}, "
-                f"信念分数: {conviction_result.score:.2f}"
+                f"信号: {signal_str}, "
+                f"信念分数: {conviction_score:.2f}"
             )
 
             return strategy_execution
