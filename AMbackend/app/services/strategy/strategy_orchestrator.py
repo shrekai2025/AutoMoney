@@ -23,7 +23,9 @@ from app.schemas.strategy import TradeType, StrategyStatus, TradeSignal
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.portfolio_service import portfolio_service
 from app.services.strategy.real_agent_executor import real_agent_executor
+from app.services.strategy.dynamic_agent_executor import dynamic_agent_executor
 from app.agents.general_analysis_agent import general_analysis_agent
+from app.services.decision.signal_generator import SignalGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,7 @@ class StrategyOrchestrator:
         portfolio_id: str,
         market_data: Dict[str, Any],
         agent_outputs: Optional[Dict[str, Any]] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> StrategyExecution:
         """
         执行完整策略流程
@@ -105,11 +108,13 @@ class StrategyOrchestrator:
             portfolio_id: 投资组合ID
             market_data: 市场数据快照
             agent_outputs: Agent 分析输出 (如果为 None，则跳过 Agent 执行步骤)
+            template_execution_batch_id: 批量执行批次ID (用于关联同批次的executions)
 
         Returns:
             StrategyExecution: 策略执行记录
         """
         execution_start = datetime.utcnow()
+        strategy_execution = None  # 初始化为None，用于异常处理
 
         try:
             # 获取投资组合 (with eager loading of holdings and strategy_definition)
@@ -137,10 +142,12 @@ class StrategyOrchestrator:
 
             strategy_execution = StrategyExecution(
                 user_id=user_id,
+                portfolio_id=portfolio_id,  # 添加 portfolio_id
                 execution_time=execution_start,
                 strategy_name="Multi-Agent Strategy",
                 market_snapshot=serialized_market_data,
                 status=StrategyStatus.RUNNING.value,
+                template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
             )
 
             db.add(strategy_execution)
@@ -152,15 +159,30 @@ class StrategyOrchestrator:
             # Step 2: 使用提供的 Agent 输出，或执行真实 Agents
             agent_errors = {}
             if not agent_outputs:
-                logger.info("开始执行真实 Agent 分析")
+                logger.info(f"开始执行业务Agent: {strategy_definition.business_agents}")
                 try:
-                    agent_outputs, agent_errors = await real_agent_executor.execute_all_agents(
-                        market_data=market_data,
-                        db=db,
-                        user_id=user_id,
-                        strategy_execution_id=strategy_execution_id,
-                    )
-                    logger.info(f"✅ Agent 执行成功: {agent_outputs.keys()}")
+                    # 🆕 根据策略定义动态执行Agent
+                    if strategy_definition.business_agents:
+                        # 使用动态Agent执行器
+                        agent_outputs, agent_errors = await dynamic_agent_executor.execute_agents(
+                            agent_names=strategy_definition.business_agents,
+                            market_data=market_data,
+                            db=db,
+                            user_id=user_id,
+                            strategy_execution_id=strategy_execution_id,
+                            template_execution_batch_id=template_execution_batch_id,
+                        )
+                    else:
+                        # 默认使用旧的三Agent (向后兼容)
+                        logger.warning("strategy_definition.business_agents为空,使用默认Agent")
+                        agent_outputs, agent_errors = await real_agent_executor.execute_all_agents(
+                            market_data=market_data,
+                            db=db,
+                            user_id=user_id,
+                            strategy_execution_id=strategy_execution_id,
+                        )
+                    
+                    logger.info(f"✅ Agent 执行成功: {list(agent_outputs.keys())}")
                 except Exception as e:
                     logger.error(f"❌ Agent 执行失败: {e}", exc_info=True)
                     # Agent工作错误 - 不继续执行策略
@@ -208,14 +230,22 @@ class StrategyOrchestrator:
                 current_position=current_position,
             )
             
-            conviction_score = decision_result["conviction_score"]
-            signal = decision_result["signal"]
-            signal_strength = decision_result["signal_strength"]
-            position_size = decision_result["position_size"]
-            risk_level = decision_result["risk_level"]
-            should_execute = decision_result["should_execute"]
-            reasons = decision_result["reasons"]
-            warnings = decision_result["warnings"]
+            # 兼容两种返回格式: DecisionOutput对象或字典
+            if hasattr(decision_result, 'to_dict'):
+                # 新的DecisionOutput对象
+                decision_dict = decision_result.to_dict()
+            else:
+                # 旧的字典格式
+                decision_dict = decision_result
+            
+            conviction_score = decision_dict["conviction_score"]
+            signal = decision_dict["signal"]
+            signal_strength = decision_dict["signal_strength"]
+            position_size = decision_dict["position_size"]
+            risk_level = decision_dict["risk_level"]
+            should_execute = decision_dict["should_execute"]
+            reasons = decision_dict["reasons"]
+            warnings = decision_dict["warnings"]
             
             logger.info(
                 f"决策完成: signal={signal}, conviction={conviction_score:.2f}, "
@@ -332,22 +362,53 @@ class StrategyOrchestrator:
         except Exception as e:
             logger.error(f"策略执行失败: {e}", exc_info=True)
 
-            # 创建失败记录
-            # 序列化 market_data 以确保可以存储到 JSONB
-            serialized_market_data = self._serialize_for_json(market_data)
-
-            failed_execution = StrategyExecution(
-                user_id=user_id,
-                execution_time=execution_start,
-                strategy_name="Multi-Agent Strategy",
-                market_snapshot=serialized_market_data,
-                status=StrategyStatus.FAILED.value,
-                error_message=str(e),
-            )
-
-            db.add(failed_execution)
-            await db.commit()
-            await db.refresh(failed_execution)
+            # 如果strategy_execution已经创建，更新它的状态为失败
+            # 而不是创建新记录，避免留下RUNNING状态的记录
+            try:
+                if strategy_execution is not None:
+                    # 更新已创建的execution记录
+                    strategy_execution.status = StrategyStatus.FAILED.value
+                    strategy_execution.error_message = str(e)
+                    
+                    # 记录详细的错误信息
+                    strategy_execution.error_details = {
+                        "error_type": "execution_exception",
+                        "error_message": str(e),
+                        "exception_type": type(e).__name__,
+                    }
+                    
+                    # 计算执行时间
+                    execution_duration = (datetime.utcnow() - execution_start).total_seconds() * 1000
+                    strategy_execution.execution_duration_ms = int(execution_duration)
+                    
+                    await db.commit()
+                    logger.info(f"已更新执行记录状态为FAILED: {strategy_execution.id}")
+                else:
+                    # 如果execution记录还没有创建，创建新的失败记录
+                    serialized_market_data = self._serialize_for_json(market_data)
+                    
+                    failed_execution = StrategyExecution(
+                        user_id=user_id,
+                        portfolio_id=portfolio_id,
+                        execution_time=execution_start,
+                        strategy_name="Multi-Agent Strategy",
+                        market_snapshot=serialized_market_data,
+                        status=StrategyStatus.FAILED.value,
+                        error_message=str(e),
+                        error_details={
+                            "error_type": "execution_exception",
+                            "error_message": str(e),
+                            "exception_type": type(e).__name__,
+                        },
+                    )
+                    
+                    db.add(failed_execution)
+                    await db.commit()
+                    logger.info(f"已创建失败执行记录: {failed_execution.id}")
+            except Exception as commit_error:
+                logger.error(f"更新执行记录失败: {commit_error}", exc_info=True)
+                await db.rollback()
+                # 即使更新失败，也要抛出原始异常
 
             raise
 
@@ -442,7 +503,8 @@ class StrategyOrchestrator:
         - 看跌: conviction < 40, signal = SELL
         - 中性: 其他情况 (不计数)
         """
-        threshold = portfolio.consecutive_signal_threshold or 30
+        threshold = (portfolio.instance_params.get('consecutive_signal_threshold', 30)
+                     if portfolio.instance_params else 30)
 
         # 更新上次信念分数
         portfolio.last_conviction_score = conviction_score

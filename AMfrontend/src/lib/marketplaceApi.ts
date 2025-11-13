@@ -27,8 +27,9 @@ export async function fetchMarketplaceStrategies(
     params.append('risk_level', riskLevel);
   }
 
+  // 使用新的 /strategies 接口（带尾部斜杠以避免重定向）
   const response = await apiClient.get<MarketplaceResponse>(
-    `/api/v1/marketplace?${params.toString()}`
+    `/api/v1/strategies/?${params.toString()}`
   );
 
   return response.data;
@@ -42,7 +43,7 @@ export async function fetchStrategyDetail(
   strategyId: string
 ): Promise<StrategyDetail> {
   const response = await apiClient.get<StrategyDetail>(
-    `/api/v1/marketplace/${strategyId}`
+    `/api/v1/strategies/${strategyId}`
   );
 
   return response.data;
@@ -58,7 +59,7 @@ export async function deployFunds(
   amount: number
 ): Promise<{ success: boolean; message: string }> {
   const response = await apiClient.post(
-    `/api/v1/marketplace/${strategyId}/deploy`,
+    `/api/v1/strategies/${strategyId}/deploy`,
     null,
     {
       params: { amount },
@@ -78,7 +79,7 @@ export async function withdrawFunds(
   amount: number
 ): Promise<{ success: boolean; message: string }> {
   const response = await apiClient.post(
-    `/api/v1/marketplace/${strategyId}/withdraw`,
+    `/api/v1/strategies/${strategyId}/withdraw`,
     null,
     {
       params: { amount },
@@ -96,7 +97,7 @@ export async function fetchExecutionDetail(
   executionId: string
 ): Promise<StrategyExecutionDetail> {
   const response = await apiClient.get<StrategyExecutionDetail>(
-    `/api/v1/marketplace/executions/${executionId}`
+    `/api/v1/strategies/executions/${executionId}`
   );
 
   return response.data;
@@ -131,7 +132,7 @@ export async function fetchStrategyExecutions(
   has_prev: boolean;
 }> {
   const response = await apiClient.get(
-    `/api/v1/marketplace/${strategyId}/executions`,
+    `/api/v1/strategies/${strategyId}/executions`,
     {
       params: {
         page,
@@ -208,9 +209,36 @@ export async function updateStrategySettings(
   }
 
   const response = await apiClient.patch(
-    `/api/v1/marketplace/${strategyId}/settings`,
+    `/api/v1/strategies/${strategyId}/settings`,
     body,
     { params }
+  );
+
+  return response.data;
+}
+
+/**
+ * 手动触发策略执行
+ * @param strategyId - 策略 ID (Portfolio UUID)
+ */
+export async function executeStrategyNow(
+  strategyId: string
+): Promise<{
+  id: string;
+  portfolio_id: string;
+  execution_time: string;
+  signal: string;
+  status: string;
+  message?: string;
+}> {
+  const response = await apiClient.post(
+    `/api/v1/strategy/manual-trigger`,
+    null,
+    {
+      params: {
+        portfolio_id: strategyId,
+      },
+    }
   );
 
   return response.data;

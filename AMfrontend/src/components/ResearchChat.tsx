@@ -98,32 +98,23 @@ const ResearchChat = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Show login placeholder if not authenticated
-  if (!isAuthenticated) {
-    return (
-      <LoginPlaceholder
-        title="AI Research Chat"
-        description="Sign in to access our AI-powered research platform. Get multi-dimensional analysis on cryptocurrency markets, macro economics, and trading strategies."
-        icon={MessageSquare}
-      />
-    );
-  }
-
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // 将所有 Hooks 移到条件返回之前，确保每次渲染时 Hooks 调用顺序一致
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, currentProcessSteps]);
+    if (isAuthenticated) {
+      scrollToBottom();
+    }
+  }, [messages, currentProcessSteps, isAuthenticated]);
 
   // Auto-resize textarea
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
-    }
-  }, [inputMessage]);
+    if (!isAuthenticated || !textareaRef.current) return;
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
+  }, [inputMessage, isAuthenticated]);
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || isProcessing) return;

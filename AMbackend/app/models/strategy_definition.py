@@ -26,10 +26,11 @@ class StrategyDefinition(Base):
     # 标识和展示信息
     name = Column(String(100), unique=True, nullable=False, index=True, 
                   comment="唯一标识，如 'multi_agent_btc_v1'")
-    display_name = Column(String(200), nullable=False, 
+    display_name = Column(String(200), nullable=False,
                          comment="显示名称，如 'Multi-Agent BTC Strategy'")
     description = Column(Text, comment="策略描述")
-    
+    philosophy = Column(Text, comment="策略哲学/说明（长文本）")
+
     # 决策引擎配置（代码引用）
     decision_agent_module = Column(String(200), nullable=False,
                                    comment="决策Agent模块路径，如 'app.decision_agents.multi_agent_conviction'")

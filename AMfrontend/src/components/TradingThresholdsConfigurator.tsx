@@ -5,8 +5,8 @@ export interface TradingThresholds {
   fgCircuitBreakerThreshold: number;
   fgPositionAdjustThreshold: number;
   buyThreshold: number;
-  partialSellThreshold: number;
   fullSellThreshold: number;
+  // 注意: partial_sell_threshold 已移除，部分减仓区间现在是 [fullSellThreshold, buyThreshold)
 }
 
 interface TradingThresholdsConfiguratorProps {
@@ -103,26 +103,6 @@ export function TradingThresholdsConfigurator({
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="partial-sell-threshold" className="text-sm font-medium text-slate-200">
-            Partial Sell Threshold (0-100)
-          </Label>
-          <Input
-            id="partial-sell-threshold"
-            type="number"
-            min="0"
-            max="100"
-            step="0.1"
-            value={initialThresholds.partialSellThreshold}
-            onChange={(e) => handleChange('partialSellThreshold', parseFloat(e.target.value))}
-            className="bg-slate-800 border-slate-600 text-white"
-            disabled={disabled}
-          />
-          <p className="text-xs text-slate-400">
-            Upper bound for partial selling. Between Full Sell and this value, position is partially reduced. Default: 50
-          </p>
-        </div>
-
-        <div className="space-y-2">
           <Label htmlFor="full-sell-threshold" className="text-sm font-medium text-slate-200">
             Full Sell Threshold (0-100)
           </Label>
@@ -153,7 +133,7 @@ export function TradingThresholdsConfigurator({
           </div>
           <div className="flex items-center gap-2">
             <span className="text-yellow-400">●</span>
-            <span>{initialThresholds.fullSellThreshold} ≤ Score &lt; {initialThresholds.partialSellThreshold}: Partial Sell (0-50%)</span>
+            <span>{initialThresholds.fullSellThreshold} ≤ Score &lt; {initialThresholds.buyThreshold}: Partial Sell (0-50%)</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-green-400">●</span>

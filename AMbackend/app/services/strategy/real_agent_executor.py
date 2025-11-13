@@ -56,6 +56,7 @@ class RealAgentExecutor:
         db: Optional[AsyncSession] = None,
         user_id: Optional[int] = None,
         strategy_execution_id: Optional[str] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """执行所有 Agent 分析（带重试和超时控制）
 
@@ -64,6 +65,7 @@ class RealAgentExecutor:
             db: 数据库会话（可选，用于记录 Agent 执行）
             user_id: 用户 ID
             strategy_execution_id: 策略执行 ID（用于关联记录）
+            template_execution_batch_id: 批量执行批次ID（用于关联同批次的executions）
 
         Returns:
             Tuple[Dict, Dict]:
@@ -82,9 +84,9 @@ class RealAgentExecutor:
 
         # 并行执行所有 Agent（带重试）
         tasks = [
-            self._run_agent_with_retry("macro", self._run_macro_agent, market_data, db, user_id, strategy_execution_id),
-            self._run_agent_with_retry("ta", self._run_ta_agent, market_data, db, user_id, strategy_execution_id),
-            self._run_agent_with_retry("onchain", self._run_onchain_agent, market_data, db, user_id, strategy_execution_id),
+            self._run_agent_with_retry("macro", self._run_macro_agent, market_data, db, user_id, strategy_execution_id, template_execution_batch_id),
+            self._run_agent_with_retry("ta", self._run_ta_agent, market_data, db, user_id, strategy_execution_id, template_execution_batch_id),
+            self._run_agent_with_retry("onchain", self._run_onchain_agent, market_data, db, user_id, strategy_execution_id, template_execution_batch_id),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -137,6 +139,7 @@ class RealAgentExecutor:
         db: Optional[AsyncSession] = None,
         user_id: Optional[int] = None,
         strategy_execution_id: Optional[str] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> Dict[str, Any]:
         """带重试和超时控制的Agent执行
 
@@ -159,7 +162,7 @@ class RealAgentExecutor:
 
                 # 使用asyncio.wait_for添加超时控制
                 result = await asyncio.wait_for(
-                    agent_func(market_data, db, user_id, strategy_execution_id),
+                    agent_func(market_data, db, user_id, strategy_execution_id, template_execution_batch_id),
                     timeout=AGENT_TIMEOUT
                 )
 
@@ -191,6 +194,7 @@ class RealAgentExecutor:
         db: Optional[AsyncSession] = None,
         user_id: Optional[int] = None,
         strategy_execution_id: Optional[str] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> Dict[str, Any]:
         """运行宏观分析 Agent"""
         start_time = time.time()
@@ -233,6 +237,7 @@ class RealAgentExecutor:
                         strategy_execution_id=strategy_execution_id,  # Fix: use strategy_execution_id parameter
                         user_id=user_id,
                         execution_duration_ms=execution_duration_ms,
+                        template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
                     )
                     print(f"✅ Recorded macro_agent execution to database")
 
@@ -260,6 +265,7 @@ class RealAgentExecutor:
         db: Optional[AsyncSession] = None,
         user_id: Optional[int] = None,
         strategy_execution_id: Optional[str] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> Dict[str, Any]:
         """运行技术分析 Agent"""
         start_time = time.time()
@@ -301,6 +307,7 @@ class RealAgentExecutor:
                         strategy_execution_id=strategy_execution_id,  # Fix: use strategy_execution_id parameter
                         user_id=user_id,
                         execution_duration_ms=execution_duration_ms,
+                        template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
                     )
                     print(f"✅ Recorded ta_agent execution to database")
 
@@ -330,6 +337,7 @@ class RealAgentExecutor:
         db: Optional[AsyncSession] = None,
         user_id: Optional[int] = None,
         strategy_execution_id: Optional[str] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> Dict[str, Any]:
         """运行链上数据分析 Agent"""
         start_time = time.time()
@@ -367,6 +375,7 @@ class RealAgentExecutor:
                         strategy_execution_id=strategy_execution_id,  # Fix: use strategy_execution_id parameter
                         user_id=user_id,
                         execution_duration_ms=execution_duration_ms,
+                        template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
                     )
                     print(f"✅ Recorded onchain_agent execution to database")
 

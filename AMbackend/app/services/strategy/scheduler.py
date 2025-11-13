@@ -39,12 +39,17 @@ class StrategyScheduler:
     """
 
     def __init__(self):
-        self.scheduler = AsyncIOScheduler(timezone="UTC")
+        self.scheduler = None  # 延迟初始化
         self.engine = None
         self.SessionLocal = None
 
     async def initialize(self):
-        """初始化数据库连接"""
+        """初始化数据库连接和调度器"""
+        # 创建调度器（在事件循环中）
+        if self.scheduler is None:
+            self.scheduler = AsyncIOScheduler(timezone="UTC")
+
+        # 初始化数据库连接
         self.engine = create_async_engine(
             settings.DATABASE_URL,
             echo=False,
@@ -92,16 +97,6 @@ class StrategyScheduler:
             max_instances=1,
         )
 
-        # Job 2: 批量策略执行 (每10分钟) - 成本优化版
-        self.scheduler.add_job(
-            self.batch_execute_strategies_job,
-            trigger=IntervalTrigger(minutes=10),
-            id="batch_strategies",
-            name="批量策略执行（共享Agent分析）",
-            replace_existing=True,
-            max_instances=1,
-        )
-
         # Job 3: 组合快照 (每10分钟)
         self.scheduler.add_job(
             self.create_portfolio_snapshots_job,
@@ -112,36 +107,81 @@ class StrategyScheduler:
             max_instances=1,
         )
 
-        logger.info("全局定时任务已添加（包括批量执行模式）")
+        logger.info("全局定时任务已添加（市场数据+组合快照）")
 
     async def _add_all_portfolio_jobs(self):
         """
-        为所有活跃策略添加统一的批量执行任务
+        为每个策略模板添加独立的批量执行任务
 
         优化说明：
-        - 所有Portfolio共享同一个定时任务（而不是每个Portfolio一个任务）
-        - 每次执行时，先运行一次Agent分析，然后所有Portfolio共享这个分析结果
-        - 大幅降低LLM调用成本（从 N次 降低到 1次）
+        - 按strategy_definition_id分组
+        - 每个模板创建一个定时任务，使用模板的rebalance_period_minutes
+        - 同一模板的所有实例共享Agent分析结果
         """
         try:
-            print(f"[Scheduler] 开始添加批量策略执行任务...")
-
-            # 注意：这里不再为每个Portfolio单独创建任务
-            # 而是使用统一的批量执行任务（在 _add_global_jobs 中已添加）
+            print(f"[Scheduler] 开始添加策略模板批量执行任务...")
 
             async with self.SessionLocal() as db:
+                # 1. 获取所有活跃的Portfolio及其strategy_definition
                 result = await db.execute(
-                    select(Portfolio).where(Portfolio.is_active == True)
+                    select(Portfolio)
+                    .options(selectinload(Portfolio.strategy_definition))
+                    .where(Portfolio.is_active == True)
                 )
                 portfolios = result.scalars().all()
-                print(f"[Scheduler] 找到 {len(portfolios)} 个活跃策略，将使用批量执行模式")
 
-                logger.info(f"批量执行模式：{len(portfolios)} 个Portfolio将共享Agent分析结果")
-                print(f"[Scheduler] ✓ 批量执行模式已启用，成本优化：Agent调用从 {len(portfolios)}次/周期 降至 1次/周期")
+                if not portfolios:
+                    logger.info("没有活跃的策略实例")
+                    return
+
+                # 2. 按strategy_definition_id分组
+                from collections import defaultdict
+                from app.models.strategy_definition import StrategyDefinition
+
+                portfolios_by_definition = defaultdict(list)
+                for portfolio in portfolios:
+                    if portfolio.strategy_definition_id:
+                        portfolios_by_definition[portfolio.strategy_definition_id].append(portfolio)
+
+                logger.info(
+                    f"找到 {len(portfolios)} 个活跃实例，"
+                    f"分为 {len(portfolios_by_definition)} 个策略模板组"
+                )
+
+                # 3. 为每个模板组创建定时任务
+                for definition_id, group_portfolios in portfolios_by_definition.items():
+                    definition = group_portfolios[0].strategy_definition
+                    if not definition:
+                        logger.warning(f"策略模板 {definition_id} 不存在，跳过")
+                        continue
+
+                    # 从模板获取执行周期
+                    period_minutes = definition.default_params.get("rebalance_period_minutes", 10)
+
+                    # 创建定时任务
+                    job_id = f"strategy_template_{definition_id}"
+                    self.scheduler.add_job(
+                        self.batch_execute_by_template,
+                        trigger=IntervalTrigger(minutes=period_minutes),
+                        id=job_id,
+                        name=f"策略模板执行: {definition.display_name}",
+                        args=[definition_id],
+                        replace_existing=True,
+                        max_instances=1,
+                    )
+
+                    logger.info(
+                        f"✓ 添加模板任务: {definition.display_name} "
+                        f"(ID={definition_id}, 周期={period_minutes}分钟, 实例数={len(group_portfolios)})"
+                    )
+                    print(
+                        f"[Scheduler] ✓ {definition.display_name}: "
+                        f"{period_minutes}分钟周期, {len(group_portfolios)}个实例共享Agent分析"
+                    )
 
         except Exception as e:
-            logger.error(f"检查活跃策略失败: {e}", exc_info=True)
-            print(f"[Scheduler] ❌ 检查活跃策略失败: {e}")
+            logger.error(f"添加策略模板任务失败: {e}", exc_info=True)
+            print(f"[Scheduler] ❌ 添加任务失败: {e}")
 
     def add_portfolio_job(
         self, portfolio_id: str, portfolio_name: str, period_minutes: int
@@ -289,140 +329,150 @@ class StrategyScheduler:
         except Exception as e:
             logger.error(f"策略执行 Job 失败: {portfolio_id} - {e}", exc_info=True)
 
-    async def batch_execute_strategies_job(self):
+    async def batch_execute_by_template(self, definition_id: int):
         """
-        批量执行所有活跃策略 - 按策略模板分组优化版本
+        按策略模板批量执行 - 新的按模板分组执行方法
 
         工作流程:
-        1. 获取所有活跃Portfolio，按strategy_definition_id分组
-        2. 遍历每个策略模板组
-        3. 每组执行一次Agent分析（组内Portfolio共享）
-        4. 为组内每个Portfolio执行决策和交易
+        1. 获取指定模板的所有活跃实例
+        2. 执行一次Agent分析（所有实例共享）
+        3. 为每个实例执行决策和交易
+
+        Args:
+            definition_id: 策略模板ID
 
         成本优化:
-        - 相同机制的策略共享Agent分析结果
-        - LLM调用次数: 从 N次 降至 M次 (M = 策略模板数量)
+        - 同一模板的所有实例共享Agent分析结果
+        - LLM调用次数: 1次/周期（无论有多少实例）
         """
-        logger.info("开始批量执行策略（按模板分组）")
-
         try:
             async with self.SessionLocal() as db:
-                # 1. 获取所有活跃的Portfolio（with strategy_definition）
+                # 1. 获取指定模板的所有活跃Portfolio
                 result = await db.execute(
                     select(Portfolio)
                     .options(
                         selectinload(Portfolio.holdings),
                         selectinload(Portfolio.strategy_definition)
                     )
-                    .where(Portfolio.is_active == True)
+                    .where(
+                        Portfolio.strategy_definition_id == definition_id,
+                        Portfolio.is_active == True
+                    )
                 )
                 portfolios = result.scalars().all()
 
                 if not portfolios:
-                    logger.info("没有活跃的Portfolio，跳过批量执行")
+                    logger.info(f"策略模板 {definition_id} 没有活跃实例，跳过执行")
                     return
 
-                # 2. 按strategy_definition_id分组
-                from collections import defaultdict
-                portfolios_by_definition = defaultdict(list)
-                
-                for portfolio in portfolios:
-                    if portfolio.strategy_definition_id:
-                        portfolios_by_definition[portfolio.strategy_definition_id].append(portfolio)
-                    else:
-                        # 旧数据，跳过或使用旧逻辑
-                        logger.warning(f"Portfolio {portfolio.id} 未关联策略模板，跳过")
-
-                logger.info(
-                    f"找到 {len(portfolios)} 个活跃Portfolio，"
-                    f"分为 {len(portfolios_by_definition)} 个策略模板组"
-                )
-
-                # 3. 遍历每个策略模板组
-                total_agent_calls = 0
-                for definition_id, group_portfolios in portfolios_by_definition.items():
-                    logger.info(
-                        f"\n{'='*60}\n"
-                        f"执行策略模板组: ID={definition_id}, "
-                        f"实例数={len(group_portfolios)}\n"
-                        f"{'='*60}"
-                    )
-                    
-                    # 3.1 获取策略定义
-                    definition = group_portfolios[0].strategy_definition
-                    if not definition:
-                        logger.error(f"策略模板 {definition_id} 不存在，跳过")
-                        continue
-                    
-                    logger.info(
-                        f"策略模板: {definition.display_name}, "
-                        f"业务Agent: {definition.business_agents}"
-                    )
-                    
-                    # 3.2 采集市场数据（组内共享）
-                    market_data = await self._fetch_market_data()
-                    
-                    # 3.3 执行一次Agent分析（关键优化！组内共享）
-                    logger.info(f"执行Agent分析（组内 {len(group_portfolios)} 个实例共享）")
-                    
-                    from app.services.strategy.real_agent_executor import RealAgentExecutor
-                    agent_executor = RealAgentExecutor()
-                    
-                    agent_outputs, agent_errors = await agent_executor.execute_all_agents(
-                        market_data=market_data,
-                        db=db,
-                        user_id=group_portfolios[0].user_id,
-                        strategy_execution_id=None,  # 批量执行不链接到特定execution
-                    )
-                    
-                    total_agent_calls += 1
-                    logger.info(f"✅ Agent分析完成（第{total_agent_calls}次调用）")
-                    
-                    # 3.4 为组内每个Portfolio执行决策和交易
-                    for portfolio in group_portfolios:
-                        try:
-                            logger.info(
-                                f"执行实例: {portfolio.instance_name} (ID: {portfolio.id})"
-                            )
-
-                            # 使用共享的agent_outputs执行策略
-                            execution = await strategy_orchestrator.execute_strategy(
-                                db=db,
-                                user_id=portfolio.user_id,
-                                portfolio_id=str(portfolio.id),
-                                market_data=market_data,
-                                agent_outputs=agent_outputs,  # 共享的分析结果
-                            )
-
-                            # 更新执行时间
-                            portfolio.last_execution_time = datetime.utcnow()
-                            await db.commit()
-
-                            logger.info(
-                                f"✅ 实例执行完成 - {portfolio.instance_name}, "
-                                f"信号: {execution.signal}, 状态: {execution.status}"
-                            )
-
-                        except Exception as e:
-                            logger.error(
-                                f"❌ 实例执行失败: {portfolio.instance_name} - {e}",
-                                exc_info=True
-                            )
-                            await db.rollback()
-                            # 继续下一个实例
+                definition = portfolios[0].strategy_definition
+                if not definition:
+                    logger.error(f"策略模板 {definition_id} 不存在")
+                    return
 
                 logger.info(
                     f"\n{'='*60}\n"
-                    f"批量执行完成汇总:\n"
-                    f"  - 策略模板数: {len(portfolios_by_definition)}\n"
-                    f"  - 实例总数: {len(portfolios)}\n"
-                    f"  - Agent调用次数: {total_agent_calls}\n"
-                    f"  - 节省LLM调用: {len(portfolios) - total_agent_calls} 次\n"
+                    f"执行策略模板: {definition.display_name} (ID={definition_id})\n"
+                    f"实例数: {len(portfolios)}\n"
+                    f"业务Agent: {definition.business_agents}\n"
+                    f"{'='*60}"
+                )
+
+                # 2. 生成批次ID（用于关联本次批量执行的所有记录）
+                import uuid
+                batch_id = uuid.uuid4()
+                logger.info(f"批次ID: {batch_id}")
+
+                # 3. 采集市场数据
+                market_data = await self._fetch_market_data()
+
+                # 4. 根据策略定义动态执行Agent分析（所有实例共享）
+                logger.info(f"执行Agent分析（{len(portfolios)} 个实例共享）")
+
+                # 🆕 根据策略定义选择Agent执行器
+                if definition.business_agents:
+                    # 使用动态Agent执行器(新策略)
+                    from app.services.strategy.dynamic_agent_executor import dynamic_agent_executor
+                    
+                    logger.info(f"使用动态Agent执行器: {definition.business_agents}")
+                    agent_outputs, agent_errors = await dynamic_agent_executor.execute_agents(
+                        agent_names=definition.business_agents,  # ✅ 从策略定义读取
+                        market_data=market_data,
+                        db=db,
+                        user_id=portfolios[0].user_id,
+                        strategy_execution_id=None,
+                        template_execution_batch_id=batch_id,
+                    )
+                    logger.info(f"✅ 动态Agent执行完成: {list(agent_outputs.keys())}")
+                else:
+                    # 使用默认Agent执行器(旧策略,向后兼容)
+                    from app.services.strategy.real_agent_executor import RealAgentExecutor
+                    agent_executor = RealAgentExecutor()
+                    
+                    logger.info("使用默认Agent执行器(旧策略)")
+                    agent_outputs, agent_errors = await agent_executor.execute_all_agents(
+                        market_data=market_data,
+                        db=db,
+                        user_id=portfolios[0].user_id,
+                        strategy_execution_id=None,
+                        template_execution_batch_id=batch_id,
+                    )
+                    logger.info(f"✅ 默认Agent执行完成")
+
+                # 4. 为每个Portfolio执行决策和交易
+                success_count = 0
+                failure_count = 0
+
+                for portfolio in portfolios:
+                    try:
+                        logger.info(
+                            f"执行实例: {portfolio.instance_name} (ID: {portfolio.id})"
+                        )
+
+                        # 使用共享的agent_outputs执行策略
+                        execution = await strategy_orchestrator.execute_strategy(
+                            db=db,
+                            user_id=portfolio.user_id,
+                            portfolio_id=str(portfolio.id),
+                            market_data=market_data,
+                            agent_outputs=agent_outputs,  # 共享的分析结果
+                            template_execution_batch_id=batch_id,  # 🆕 传递批次ID
+                        )
+
+                        # 更新执行时间
+                        portfolio.last_execution_time = datetime.utcnow()
+                        await db.commit()
+
+                        success_count += 1
+                        logger.info(
+                            f"✅ 实例执行完成 - {portfolio.instance_name}, "
+                            f"信号: {execution.signal}, 状态: {execution.status}"
+                        )
+
+                    except Exception as e:
+                        failure_count += 1
+                        logger.error(
+                            f"❌ 实例执行失败: {portfolio.instance_name} - {e}",
+                            exc_info=True
+                        )
+                        # ⚠️ 重要：不要rollback！
+                        # strategy_orchestrator的异常处理已经更新了execution状态并commit了
+                        # 如果这里rollback，会回滚execution的状态更新，导致记录卡在RUNNING状态
+                        # 只需要刷新session状态，继续下一个实例
+                        await db.refresh(portfolio) if portfolio else None
+                        # 继续下一个实例
+
+                logger.info(
+                    f"\n{'='*60}\n"
+                    f"模板 {definition.display_name} 执行完成:\n"
+                    f"  - 成功: {success_count}\n"
+                    f"  - 失败: {failure_count}\n"
+                    f"  - Agent调用: 1次（节省 {len(portfolios) - 1} 次）\n"
                     f"{'='*60}"
                 )
 
         except Exception as e:
-            logger.error(f"批量策略执行Job失败: {e}", exc_info=True)
+            logger.error(f"模板 {definition_id} 批量执行失败: {e}", exc_info=True)
 
     async def collect_market_data_job(self):
         """
@@ -550,6 +600,79 @@ class StrategyScheduler:
 
         except Exception as e:
             logger.error(f"组合快照 Job 失败: {e}", exc_info=True)
+
+    async def reload_template_schedule(self, definition_id: int):
+        """
+        动态重新加载指定策略模板的调度任务
+
+        当admin修改策略模板的执行周期时调用此方法，立即生效
+
+        Args:
+            definition_id: 策略模板ID
+        """
+        try:
+            logger.info(f"[Scheduler] 开始重新加载策略模板 {definition_id} 的调度任务")
+
+            # 1. 移除旧的调度任务
+            job_id = f"strategy_template_{definition_id}"
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+                logger.info(f"[Scheduler] 已移除旧任务: {job_id}")
+
+            # 2. 从数据库重新读取最新配置
+            async with self.SessionLocal() as db:
+                from app.models.strategy_definition import StrategyDefinition
+
+                result = await db.execute(
+                    select(StrategyDefinition).where(
+                        StrategyDefinition.id == definition_id
+                    )
+                )
+                definition = result.scalar_one_or_none()
+
+                if not definition:
+                    logger.warning(f"[Scheduler] 策略模板 {definition_id} 不存在")
+                    return
+
+                # 3. 获取使用此模板的所有激活实例
+                result = await db.execute(
+                    select(Portfolio).where(
+                        Portfolio.strategy_definition_id == definition_id,
+                        Portfolio.is_active == True
+                    )
+                )
+                portfolios = result.scalars().all()
+
+            # 4. 如果没有激活实例，不创建任务
+            if not portfolios:
+                logger.info(
+                    f"[Scheduler] 策略模板 '{definition.display_name}' "
+                    f"无激活实例，不创建调度任务"
+                )
+                return
+
+            # 5. 读取最新的执行周期配置
+            period_minutes = definition.default_params.get("rebalance_period_minutes", 10)
+
+            # 6. 创建新的调度任务
+            self.scheduler.add_job(
+                self.batch_execute_by_template,
+                trigger=IntervalTrigger(minutes=period_minutes),
+                id=job_id,
+                name=f"策略模板执行: {definition.display_name}",
+                args=[definition_id],
+                replace_existing=True,
+                max_instances=1,
+            )
+
+            logger.info(
+                f"[Scheduler] ✓ 重新加载完成: {definition.display_name} "
+                f"(ID={definition_id}, 新周期={period_minutes}分钟, 实例数={len(portfolios)})"
+            )
+
+        except Exception as e:
+            logger.error(f"[Scheduler] 重新加载任务失败: {e}", exc_info=True)
+            raise
 
     async def _fetch_market_data(self) -> dict:
         """

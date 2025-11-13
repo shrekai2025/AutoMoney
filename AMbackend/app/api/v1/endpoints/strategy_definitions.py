@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.core.deps import get_db, get_current_admin_user
+from app.core.deps import get_db, get_current_admin_user, get_current_trader_or_admin
 from app.models.user import User
 from app.services.strategy.definition_service import definition_service
 
@@ -59,11 +59,11 @@ class StrategyDefinitionUpdateRequest(BaseModel):
 async def get_all_strategy_definitions(
     include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(get_current_trader_or_admin),
 ):
     """
-    获取所有策略模板（仅Admin）
-    
+    获取所有策略模板（Trader/Admin可访问）
+
     - **include_inactive**: 是否包含未激活的模板
     """
     try:

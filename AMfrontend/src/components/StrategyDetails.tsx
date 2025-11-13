@@ -32,11 +32,12 @@ import {
   ChevronDown,
   ChevronUp,
   DollarSign,
+  Play,
 } from "lucide-react";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import redCharacter from "figma:asset/e7df430614095df0bf6f8507a2c9ff6a9129eaaf.png";
 import greenCharacter from "figma:asset/c5bd439c73b523a0fe77e12f24d55c9e5fb9c986.png";
-import { fetchStrategyDetail } from "../lib/marketplaceApi";
+import { fetchStrategyDetail, executeStrategyNow } from "../lib/marketplaceApi";
 import type { StrategyDetail } from "../types/strategy";
 import { convertPerformanceHistory, getAgentIcon, getAgentColor } from "../utils/strategyUtils";
 import { ExecutionDetailsModal } from "./ExecutionDetailsModal";
@@ -44,6 +45,8 @@ import { ExecutionHistoryModal } from "./ExecutionHistoryModal";
 import { TradeHistoryModal } from "./TradeHistoryModal";
 import { binancePriceService } from "../lib/binancePriceService";
 import { useAuth } from "../contexts/AuthContext";
+import { MultiAgentSquadActions } from "./strategy/MultiAgentSquadActions";
+import { MomentumSquadActions } from "./strategy/MomentumSquadActions";
 
 // Character avatars
 const characters = [redCharacter, greenCharacter];
@@ -84,7 +87,7 @@ interface StrategyDetailsProps {
 }
 
 export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const [strategy, setStrategy] = useState<StrategyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +100,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
   const [executionHistoryOpen, setExecutionHistoryOpen] = useState(false);
   const [tradeHistoryOpen, setTradeHistoryOpen] = useState(false);
   const [recentTrades, setRecentTrades] = useState<any[]>([]);
+  const [executing, setExecuting] = useState(false);
 
   // Load strategy details from API - only when authenticated
   useEffect(() => {
@@ -166,7 +170,7 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
     try {
       const token = localStorage.getItem("token");
       const response = await fetch(
-        `/api/v1/marketplace/${strategyId}/trades?page=1&page_size=3`,
+        `/api/v1/strategies/${strategyId}/trades?page=1&page_size=3`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -182,6 +186,47 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
       console.error('Failed to load recent trades:', err);
     }
   }
+
+  async function handleExecuteNow() {
+    if (!strategy) return;
+
+    try {
+      setExecuting(true);
+      const result = await executeStrategyNow(strategyId);
+      
+      // 重新加载策略详情以更新最新状态
+      await loadStrategyDetail();
+      
+      // 显示成功消息
+      const { toast } = await import("sonner");
+      toast.success("策略执行已触发", {
+        description: `信号: ${result.signal}, 状态: ${result.status}`,
+      });
+    } catch (err: any) {
+      console.error('Failed to execute strategy:', err);
+      const { toast } = await import("sonner");
+      toast.error("执行失败", {
+        description: err.response?.data?.detail || err.message || "无法触发策略执行",
+      });
+    } finally {
+      setExecuting(false);
+    }
+  }
+
+  // 检查用户是否有权限执行策略（admin或trader）
+  const canExecuteStrategy = user && (user.role === 'admin' || user.role === 'trader');
+
+  // 判断策略类型
+  const getStrategyType = (strategy: StrategyDetail): 'momentum' | 'multi-agent' => {
+    // 根据策略名称或display_name判断
+    const name = strategy.strategy_definition_name?.toLowerCase() || '';
+    const displayName = strategy.name?.toLowerCase() || '';
+    
+    if (name.includes('momentum') || displayName.includes('momentum') || displayName.includes('h.i.m.e')) {
+      return 'momentum';
+    }
+    return 'multi-agent';
+  };
 
   // Show loading if auth is still loading
   if (authLoading) {
@@ -283,6 +328,27 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
               ))}
             </div>
           </div>
+          {canExecuteStrategy && (
+            <div className="flex-shrink-0">
+              <Button
+                onClick={handleExecuteNow}
+                disabled={executing}
+                className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white shadow-lg shadow-emerald-500/50 gap-2 h-8 px-4 text-xs font-medium"
+              >
+                {executing ? (
+                  <>
+                    <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                    Executing...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3 h-3" />
+                    Execute Now
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -331,17 +397,17 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
           <div className="flex-1 text-center">
             <div className="text-xs text-slate-400 mb-0.5">Total Account Value</div>
             <div className="text-xl font-bold text-white">
-              ${(() => {
+              {(() => {
                 const totalHoldingsValue = strategy.holdings.reduce((sum, holding) => {
                   const currentPrice = livePrices[holding.symbol] || holding.current_price;
                   const marketValue = holding.amount * currentPrice;
                   return sum + marketValue;
                 }, 0);
                 const totalAccountValue = totalHoldingsValue + strategy.current_balance;
-                return totalAccountValue.toLocaleString(undefined, {
+                return `$${totalAccountValue.toLocaleString(undefined, {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2
-                });
+                })}`;
               })()}
             </div>
           </div>
@@ -762,144 +828,14 @@ export function StrategyDetails({ strategyId, onBack }: StrategyDetailsProps) {
           </div>
         </CardHeader>
         <CardContent className="px-3 pb-3 pt-0">
-          <div className="space-y-1.5">
-            {strategy.recent_activities.map((activity, index) => (
-              <div
-                key={index}
-                className={`flex items-center justify-between p-2 rounded border transition-all ${
-                  activity.status === 'failed'
-                    ? 'bg-red-900/20 border-red-500/50 hover:border-red-500/70'
-                    : 'bg-slate-800/30 border-slate-700/50 hover:border-purple-500/50'
-                }`}
-              >
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <Badge className={`text-xs px-1.5 py-0 h-4 ${
-                      activity.status === 'failed'
-                        ? 'bg-red-500/20 text-red-400 border-red-500/50'
-                        : 'bg-purple-500/20 text-purple-400 border-purple-500/50'
-                    }`}>
-                      {activity.agent}
-                    </Badge>
-                    {activity.status === 'failed' && (
-                      <Badge className="bg-red-500/30 text-red-300 border-red-500/60 text-xs px-1.5 py-0 h-4">
-                        ERROR
-                      </Badge>
-                    )}
-                    <span className="text-xs text-slate-500">
-                      {new Date(activity.date).toLocaleString(undefined, {
-                        year: 'numeric',
-                        month: 'numeric',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
-                    </span>
-                  </div>
-
-                  {/* 显示错误信息或正常信号 */}
-                  {activity.status === 'failed' && activity.error_details ? (
-                    <div className="text-xs mb-0.5">
-                      <div className="text-red-400 font-medium mb-1">
-                        Agent工作错误
-                      </div>
-                      <div className="text-red-300/80 text-xs">
-                        失败的Agent: <span className="font-medium">{activity.error_details.failed_agent || 'multiple'}</span>
-                      </div>
-                      <div className="text-red-300/70 text-xs mt-0.5">
-                        {activity.error_details.error_message}
-                      </div>
-                      {activity.error_details.retry_count && activity.error_details.retry_count > 0 && (
-                        <div className="text-red-300/60 text-xs mt-0.5">
-                          重试次数: {activity.error_details.retry_count}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="text-white text-xs mb-0.5">
-                      {activity.signal === 'HOLD' ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/50 font-medium">
-                          HOLD
-                        </span>
-                      ) : activity.signal === 'BUY' ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 font-medium">
-                          BUY
-                        </span>
-                      ) : activity.signal === 'SELL' ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/50 font-medium">
-                          SELL
-                        </span>
-                      ) : (
-                        <>Signal: <span className="text-slate-300">{activity.signal}</span></>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Agent Contributions - 只在成功时显示 */}
-                  {activity.status !== 'failed' && activity.agent_contributions && activity.agent_contributions.length > 0 && (
-                    <div className="mt-1.5 space-y-1">
-                      {activity.agent_contributions.map((agent, idx) => (
-                        <div key={idx} className="flex items-center gap-2 text-xs bg-slate-900/50 rounded px-2 py-1 border border-slate-700/30">
-                          <span className="text-purple-400 font-medium w-28">{agent.display_name}</span>
-                          <span className={`px-1.5 py-0.5 rounded font-medium ${
-                            agent.signal === 'BULLISH' ? 'bg-emerald-500/20 text-emerald-400' :
-                            agent.signal === 'BEARISH' ? 'bg-red-500/20 text-red-400' :
-                            'bg-slate-500/20 text-slate-400'
-                          }`}>
-                            {agent.signal}
-                          </span>
-                          <span className="text-slate-400">
-                            Confidence: <span className="text-white">{(agent.confidence * 100).toFixed(0)}%</span>
-                          </span>
-                          <span className="text-slate-400">
-                            Score: <span className={`font-medium ${
-                              agent.score > 0 ? 'text-emerald-400' :
-                              agent.score < 0 ? 'text-red-400' :
-                              'text-slate-400'
-                            }`}>{agent.score > 0 ? '+' : ''}{agent.score.toFixed(1)}</span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {activity.consecutive_count !== null && activity.consecutive_count !== undefined && activity.consecutive_count > 0 && (
-                    <div className={`px-1.5 py-0.5 rounded text-xs font-medium border ${
-                      activity.signal === 'BUY'
-                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'  // 看涨：绿色
-                        : activity.signal === 'SELL'
-                        ? 'bg-red-500/20 text-red-400 border-red-500/50'  // 看跌：红色
-                        : 'bg-blue-500/20 text-blue-400 border-blue-500/50'  // 默认：蓝色
-                    }`}>
-                      {activity.consecutive_count}x
-                    </div>
-                  )}
-                  {activity.conviction_score !== null && activity.conviction_score !== undefined && (
-                    <div className={`text-sm font-medium ${
-                      activity.conviction_score < 30 ? 'text-orange-500' :
-                      activity.conviction_score > 70 ? 'text-emerald-400' :
-                      'text-purple-400'
-                    }`}>
-                      {activity.conviction_score.toFixed(1)}%
-                    </div>
-                  )}
-                  {activity.execution_id && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setSelectedExecutionId(activity.execution_id!)}
-                      className="h-7 px-2 text-xs bg-purple-500/10 border-purple-500/50 text-purple-400 hover:bg-purple-500/20"
-                    >
-                      <Eye className="w-3 h-3 mr-1" />
-                      View
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* 根据策略类型动态渲染不同的展示组件 */}
+          {getStrategyType(strategy) === 'momentum' ? (
+            <MomentumSquadActions activities={strategy.recent_activities} />
+          ) : (
+            <MultiAgentSquadActions activities={strategy.recent_activities} />
+          )}
         </CardContent>
+
       </Card>
 
       {/* Trade History */}

@@ -146,22 +146,24 @@ async def manual_trigger_strategy(
 
     用于测试或立即执行策略（不等待定时任务）
     """
-    # 验证组合所有权
-    result = await db.execute(
-        select(Portfolio)
-        .options(selectinload(Portfolio.holdings))
-        .where(
-            Portfolio.id == portfolio_id,
-            Portfolio.user_id == current_user.id,
-            Portfolio.is_active == True,
-        )
+    # 验证组合所有权或admin权限
+    # admin可以执行任何策略，trader只能执行自己的策略
+    query = select(Portfolio).options(selectinload(Portfolio.holdings)).where(
+        Portfolio.id == portfolio_id,
+        Portfolio.is_active == True,
     )
+    
+    # 如果不是admin，添加用户ID过滤
+    if current_user.role != 'admin':
+        query = query.where(Portfolio.user_id == current_user.id)
+    
+    result = await db.execute(query)
     portfolio = result.scalar_one_or_none()
 
     if not portfolio:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Active portfolio not found"
+            detail="Active portfolio not found or you don't have permission to execute this strategy"
         )
 
     # 执行策略
@@ -175,21 +177,14 @@ async def manual_trigger_strategy(
             indicators = IndicatorCalculator.calculate_all(all_data.btc_ohlcv)
             market_data["indicators"] = indicators
 
-        # 3. 执行真实 Agent 分析
-        agent_outputs = await real_agent_executor.execute_all_agents(
-            market_data=market_data,
-            db=db,
-            user_id=current_user.id,
-            strategy_execution_id=None,  # Will be set after execution record created
-        )
-
-        # 4. 执行策略
+        # 3. 执行策略（不预先执行Agent，让strategy_orchestrator根据策略定义动态执行）
+        # 🔧 修复: 不再硬编码调用real_agent_executor，让orchestrator根据business_agents动态执行
         execution = await strategy_orchestrator.execute_strategy(
             db=db,
             user_id=current_user.id,
             portfolio_id=portfolio_id,
             market_data=market_data,
-            agent_outputs=agent_outputs,
+            agent_outputs=None,  # 🆕 传None，让orchestrator动态执行Agent
         )
 
         return StrategyExecutionResponse.from_orm(execution)

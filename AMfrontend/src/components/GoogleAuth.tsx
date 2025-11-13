@@ -57,12 +57,13 @@ export function GoogleAuth() {
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
 
+      // 等待Firebase状态更新（onAuthStateChanged会自动触发）
+      // 但为了更好的用户体验，我们手动触发一次刷新以确保立即更新
+      await refreshUser();
+
       toast.success("Sign In Successful", {
         description: `Welcome, ${user.displayName || user.email}!`,
       });
-
-      // Refresh AuthContext to load user data from backend
-      await refreshUser();
     } catch (error: any) {
       console.error("Error signing in with Google:", error);
 
@@ -89,7 +90,7 @@ export function GoogleAuth() {
       const auth = getAuth();
       await signOut(auth);
 
-      // Refresh AuthContext to clear user data
+      // onAuthStateChanged会自动触发，但为了确保状态立即更新，手动刷新一次
       await refreshUser();
 
       toast.success("Signed Out", {

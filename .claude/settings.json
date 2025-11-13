@@ -1,0 +1,6 @@
+{
+    "env": {
+      "ANTHROPIC_API_KEY": "sk-qJslangDYpKNy4h8eIzW7QFymi6YQyJd9on1w58LwHe8WxPJ",
+      "ANTHROPIC_BASE_URL": "https://api.tu-zi.com"
+    }
+}

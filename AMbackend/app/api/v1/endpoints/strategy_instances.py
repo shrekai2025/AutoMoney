@@ -5,7 +5,7 @@
 
 import logging
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,7 @@ from app.services.strategy.marketplace_service import marketplace_service  # 复
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(redirect_slashes=False)
 
 
 # ========== Request/Response Models ==========
@@ -29,6 +29,8 @@ class CreateInstanceRequest(BaseModel):
     instance_description: Optional[str] = Field(None, description="实例描述（可选）")
     initial_balance: float = Field(..., gt=0, description="初始资金（必须>0）")
     instance_params: Optional[Dict[str, Any]] = Field(None, description="实例参数（可选，不提供则使用模板默认值）")
+    tags: Optional[List[str]] = Field(None, description="策略标签（可选）")
+    risk_level: Optional[str] = Field("medium", description="风险程度：low, medium, high")
 
 
 class UpdateInstanceRequest(BaseModel):
@@ -76,75 +78,39 @@ class CreateInstanceResponse(BaseModel):
 
 # ========== API Endpoints ==========
 
-@router.get("/", response_model=InstanceListResponse)
+@router.get("/")
 async def get_strategy_instances(
-    definition_id: Optional[int] = Query(None, description="按策略模板筛选"),
-    user_id: Optional[int] = Query(None, description="按用户筛选（仅Admin）"),
-    active_only: bool = Query(False, description="是否只显示活跃实例"),
+    risk_level: Optional[str] = Query(None, description="Risk level filter: low, medium, medium-high, high"),
+    sort_by: str = Query("return", description="Sort by: return, risk, tvl, sharpe"),
+    user_id: Optional[int] = Query(None, description="Filter by user ID (optional)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    获取策略实例列表
-    
-    权限控制：
-    - 普通用户：只能看到is_active=true的实例
-    - 交易员/Admin：可以看到所有实例
-    
+    获取策略市场列表（兼容旧接口）
+
+    返回 marketplace 格式的数据，与前端期望的格式一致
+
     参数：
-    - **definition_id**: 按策略模板筛选（可选）
-    - **user_id**: 按用户筛选（仅Admin可用）
-    - **active_only**: 是否只显示活跃实例
+    - **risk_level**: 可选，筛选风险等级 (low, medium, medium-high, high)
+    - **sort_by**: 排序方式，默认return (return, risk, tvl, sharpe)
+    - **user_id**: 可选，只显示指定用户的策略（默认显示所有）
     """
     try:
-        # Admin可以查看所有用户的实例，其他角色只能看自己的
-        if current_user.role != "admin" and user_id and user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Cannot view other users' strategies")
-        
-        instances = await instance_service.get_all_instances(
+        # 如果没有指定user_id，显示所有用户的策略（策略市场是公开的）
+        filter_user_id = user_id  # None表示显示所有
+
+        result = await marketplace_service.get_marketplace_list(
             db=db,
-            user_role=current_user.role,
-            user_id=user_id,
-            definition_id=definition_id,
-            active_only=active_only
+            user_id=filter_user_id,
+            risk_level=risk_level,
+            sort_by=sort_by,
+            current_user_id=current_user.id,
         )
-        
-        # 构建响应
-        instance_list = []
-        for instance in instances:
-            strategy_name = "Unknown Strategy"
-            if instance.strategy_definition:
-                strategy_name = instance.strategy_definition.display_name
-            
-            user_name = instance.user.full_name or instance.user.email if instance.user else "Unknown"
-            
-            instance_list.append(
-                InstanceListItemResponse(
-                    id=str(instance.id),
-                    instance_name=instance.instance_name,
-                    instance_description=instance.instance_description,
-                    strategy_definition_id=instance.strategy_definition_id,
-                    strategy_display_name=strategy_name,
-                    user_id=instance.user_id,
-                    user_name=user_name,
-                    is_active=instance.is_active,
-                    total_value=float(instance.total_value),
-                    total_pnl=float(instance.total_pnl),
-                    total_pnl_percent=instance.total_pnl_percent or 0.0,
-                    created_at=instance.created_at.isoformat(),
-                )
-            )
-        
-        return InstanceListResponse(
-            instances=instance_list,
-            total=len(instance_list)
-        )
-        
-    except HTTPException:
-        raise
+        return result
     except Exception as e:
-        logger.error(f"获取策略实例列表失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get instances: {str(e)}")
+        logger.error(f"获取策略市场列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get marketplace strategies: {str(e)}")
 
 
 @router.post("/", response_model=CreateInstanceResponse)
@@ -174,6 +140,8 @@ async def create_strategy_instance(
             instance_name=create_request.instance_name,
             instance_description=create_request.instance_description,
             instance_params=create_request.instance_params,
+            tags=create_request.tags,
+            risk_level=create_request.risk_level,
         )
         
         logger.info(
@@ -314,6 +282,152 @@ async def delete_strategy_instance(
 
 # ========== 复用原有功能的端点 ==========
 
+@router.post("/{portfolio_id}/deploy")
+async def deploy_funds(
+    portfolio_id: str,
+    amount: float = Query(..., description="Amount to deploy", gt=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    部署资金到策略（激活策略）
+
+    - **portfolio_id**: Portfolio UUID
+    - **amount**: 部署金额（必须 > 0）
+
+    注意：当前为模拟盘功能，未来将实现真实资金划转
+    """
+    try:
+        result = await marketplace_service.deploy_strategy(
+            db=db,
+            portfolio_id=portfolio_id,
+            user_id=current_user.id,
+            initial_balance=amount,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"部署资金失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to deploy funds: {str(e)}")
+
+
+@router.post("/{portfolio_id}/withdraw")
+async def withdraw_funds(
+    portfolio_id: str,
+    amount: float = Query(..., description="Amount to withdraw", gt=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    从策略提现资金
+
+    - **portfolio_id**: Portfolio UUID
+    - **amount**: 提现金额（必须 > 0）
+
+    注意：此功能将在未来版本中实现完整的资金管理逻辑
+    """
+    try:
+        # TODO: 实现资金提现逻辑
+        return {
+            "success": True,
+            "message": f"Successfully withdrew ${amount} from strategy {portfolio_id}",
+            "portfolio_id": portfolio_id,
+            "amount": amount,
+        }
+    except Exception as e:
+        logger.error(f"提现资金失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to withdraw funds: {str(e)}")
+
+
+@router.patch("/{portfolio_id}/settings")
+async def update_strategy_settings(
+    portfolio_id: str,
+    request: Request,
+    rebalance_period_minutes: Optional[int] = Query(None, ge=1, le=1440, description="Rebalance period in minutes (1-1440)"),
+    consecutive_signal_threshold: Optional[int] = Query(None, ge=1, le=1000, description="Consecutive signal threshold"),
+    acceleration_multiplier_min: Optional[float] = Query(None, ge=1.0, le=5.0, description="Acceleration multiplier min"),
+    acceleration_multiplier_max: Optional[float] = Query(None, ge=1.0, le=5.0, description="Acceleration multiplier max"),
+    fg_circuit_breaker_threshold: Optional[int] = Query(None, ge=0, le=100, description="Fear & Greed circuit breaker threshold (0-100)"),
+    fg_position_adjust_threshold: Optional[int] = Query(None, ge=0, le=100, description="Fear & Greed position adjust threshold (0-100)"),
+    buy_threshold: Optional[float] = Query(None, ge=0, le=100, description="Buy threshold for conviction score (0-100)"),
+    partial_sell_threshold: Optional[float] = Query(None, ge=0, le=100, description="Partial sell threshold for conviction score (0-100)"),
+    full_sell_threshold: Optional[float] = Query(None, ge=0, le=100, description="Full sell threshold for conviction score (0-100)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    更新策略参数设置（复用原有逻辑）
+
+    可更新参数：
+    - rebalance_period_minutes: 策略执行周期
+    - agent_weights: Agent权重配置（通过request body传递）
+    - consecutive_signal_threshold: 连续信号阈值
+    - acceleration_multiplier_min/max: 加速乘数范围
+    - fg_circuit_breaker_threshold: Fear & Greed熔断阈值
+    - fg_position_adjust_threshold: Fear & Greed仓位调整阈值
+    - buy_threshold: 买入阈值
+    - partial_sell_threshold: 部分减仓阈值
+    - full_sell_threshold: 全部清仓阈值
+    """
+    try:
+        from fastapi import Request
+        from app.schemas.strategy import AgentWeights
+
+        logger.info(f"[API] 收到更新策略设置请求 - portfolio_id={portfolio_id}, rebalance_period={rebalance_period_minutes}")
+
+        # 手动解析请求体获取agent_weights
+        agent_weights = None
+        try:
+            body = await request.json()
+            logger.info(f"[API] 请求体: {body}")
+            if body and "agent_weights" in body:
+                agent_weights = body["agent_weights"]
+                logger.info(f"[API] Agent权重: {agent_weights}")
+        except Exception as e:
+            logger.warning(f"[API] 解析请求体失败: {e}")
+
+        # 验证agent_weights格式
+        if agent_weights is not None:
+            try:
+                AgentWeights(**agent_weights)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid agent_weights: {str(e)}")
+
+        # 验证乘数范围
+        if acceleration_multiplier_min is not None and acceleration_multiplier_max is not None:
+            if acceleration_multiplier_min > acceleration_multiplier_max:
+                raise HTTPException(status_code=400, detail="acceleration_multiplier_min must be <= acceleration_multiplier_max")
+
+        # 检查用户是否是管理员
+        is_admin = current_user.role == "admin"
+
+        result = await marketplace_service.update_strategy_settings(
+            db=db,
+            portfolio_id=portfolio_id,
+            user_id=current_user.id,
+            rebalance_period_minutes=rebalance_period_minutes,
+            agent_weights=agent_weights,
+            consecutive_signal_threshold=consecutive_signal_threshold,
+            acceleration_multiplier_min=acceleration_multiplier_min,
+            acceleration_multiplier_max=acceleration_multiplier_max,
+            fg_circuit_breaker_threshold=fg_circuit_breaker_threshold,
+            fg_position_adjust_threshold=fg_position_adjust_threshold,
+            buy_threshold=buy_threshold,
+            partial_sell_threshold=partial_sell_threshold,
+            full_sell_threshold=full_sell_threshold,
+            is_admin=is_admin,
+        )
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"更新策略设置失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update strategy settings: {str(e)}")
+
+
 @router.get("/{portfolio_id}/executions")
 async def get_strategy_executions(
     portfolio_id: str,
@@ -334,6 +448,30 @@ async def get_strategy_executions(
     except Exception as e:
         logger.error(f"获取执行历史失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/executions/{execution_id}")
+async def get_execution_detail(
+    execution_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    获取策略执行详情，包括所有agent调用过程和LLM对话
+
+    - **execution_id**: Strategy Execution UUID
+    """
+    try:
+        result = await marketplace_service.get_execution_detail(
+            db=db,
+            execution_id=execution_id,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"获取策略执行详情失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get execution detail: {str(e)}")
 
 
 @router.get("/{portfolio_id}/trades")

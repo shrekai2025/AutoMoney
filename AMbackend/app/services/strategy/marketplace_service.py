@@ -94,6 +94,16 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             return "high"
 
     @staticmethod
+    def _format_risk_level(risk_level: str) -> str:
+        """格式化风险等级为可读字符串"""
+        risk_mapping = {
+            "low": "Low Risk",
+            "medium": "Medium Risk",
+            "high": "High Risk"
+        }
+        return risk_mapping.get(risk_level.lower(), "Medium Risk")
+
+    @staticmethod
     def _format_rebalance_period(minutes: int) -> str:
         """格式化重平衡周期为可读字符串"""
         if minutes < 60:
@@ -167,50 +177,22 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         sort_by: str = "return",
         current_user_id: Optional[int] = None,
     ) -> StrategyMarketplaceListResponse:
-        """获取策略市场列表（只显示策略模板，即 is_active=False 的记录）"""
+        """获取策略市场列表（显示所有激活的策略实例）"""
         try:
-            # 查询策略模板：只显示未激活的Portfolio（作为模板）
-            # 每个 strategy_name 只显示一个模板
-            stmt = select(Portfolio).where(Portfolio.is_active == False)
+            # 查询所有激活的策略实例（新系统：is_active=True表示运行中的实例）
+            stmt = select(Portfolio).where(Portfolio.is_active == True)
 
-            # 如果指定用户，只返回该用户创建的模板（通常不需要，模板应该是系统级的）
+            # 如果指定用户，只返回该用户的策略实例
             if user_id:
                 stmt = stmt.where(Portfolio.user_id == user_id)
 
             result = await db.execute(stmt)
             portfolios = result.scalars().all()
 
-            # 如果提供了current_user_id，查询该用户已激活的所有策略
-            user_activated_strategies = {}
-            if current_user_id:
-                activated_stmt = select(Portfolio).where(
-                    Portfolio.user_id == current_user_id,
-                    Portfolio.is_active == True
-                )
-                activated_result = await db.execute(activated_stmt)
-                activated_portfolios = activated_result.scalars().all()
-
-                # 建立 strategy_name -> portfolio_id 的映射
-                for activated in activated_portfolios:
-                    if activated.instance_name:
-                        user_activated_strategies[activated.instance_name] = str(activated.id)
-
             strategies = []
             for portfolio in portfolios:
-                # 检查当前用户是否已激活此策略
-                strategy_name = portfolio.instance_name or ""
-                user_activated = strategy_name in user_activated_strategies
-                activated_portfolio_id = user_activated_strategies.get(strategy_name)
-
-                # 如果用户已激活，使用用户的Portfolio数据；否则使用模板数据
-                data_portfolio = portfolio  # 默认使用模板
-                if user_activated and activated_portfolio_id:
-                    # 查询用户激活的Portfolio
-                    user_portfolio_stmt = select(Portfolio).where(Portfolio.id == activated_portfolio_id)
-                    user_portfolio_result = await db.execute(user_portfolio_stmt)
-                    user_portfolio = user_portfolio_result.scalar_one_or_none()
-                    if user_portfolio:
-                        data_portfolio = user_portfolio
+                # 新系统：每个portfolio都是独立的策略实例，直接使用
+                data_portfolio = portfolio
 
                 # 计算天数
                 days = (datetime.now() - data_portfolio.created_at).days
@@ -222,24 +204,27 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                     data_portfolio.initial_balance, data_portfolio.total_value, days
                 )
 
-                # 映射风险等级
-                mapped_risk_level = self._map_risk_level(data_portfolio.max_drawdown)
+                # 使用数据库中的风险等级（优先级：数据库risk_level > 根据max_drawdown映射）
+                if data_portfolio.risk_level:
+                    mapped_risk_level = data_portfolio.risk_level
+                else:
+                    mapped_risk_level = self._map_risk_level(data_portfolio.max_drawdown)
 
                 # 风险等级过滤
                 if risk_level and mapped_risk_level != risk_level:
                     continue
 
-                # 获取历史数据（使用实际数据的Portfolio ID）
+                # 获取历史数据
                 history = await self._get_portfolio_history(db, data_portfolio.id)
 
                 # 生成标签
                 tags = self._generate_tags(data_portfolio)
 
                 strategy_card = StrategyMarketplaceCard(
-                    id=str(portfolio.id),  # 保持模板ID用于识别策略类型
-                    name=data_portfolio.name,
+                    id=str(data_portfolio.id),  # 使用实例ID
+                    name=data_portfolio.name or data_portfolio.instance_name,
                     subtitle=data_portfolio.instance_name or "Multi-Agent Strategy",
-                    description=f"Elite AI squad combining macro, onchain and technical analysis",
+                    description=data_portfolio.instance_description or "Elite AI squad combining macro, onchain and technical analysis",
                     tags=tags,
                     annualized_return=annualized_return,
                     max_drawdown=data_portfolio.max_drawdown,
@@ -251,9 +236,9 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                     history=history,
                     is_active=data_portfolio.is_active,
                     initial_balance=float(data_portfolio.initial_balance) if data_portfolio.initial_balance else None,
-                    deployed_at=data_portfolio.created_at.isoformat() if data_portfolio.is_active else None,
-                    user_activated=user_activated,  # 当前用户是否已激活
-                    activated_portfolio_id=activated_portfolio_id,  # 用户激活的Portfolio ID
+                    deployed_at=data_portfolio.created_at.isoformat(),
+                    user_activated=data_portfolio.user_id == current_user_id if current_user_id else False,  # 是否是当前用户的策略
+                    activated_portfolio_id=str(data_portfolio.id) if data_portfolio.user_id == current_user_id else None,  # 策略实例ID
                 )
                 strategies.append(strategy_card)
 
@@ -278,10 +263,13 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
     ) -> StrategyDetailResponse:
         """获取策略详情"""
         try:
-            # 查询投资组合
+            # 查询投资组合（eager load holdings和strategy_definition）
             stmt = (
                 select(Portfolio)
-                .options(selectinload(Portfolio.holdings))
+                .options(
+                    selectinload(Portfolio.holdings),
+                    selectinload(Portfolio.strategy_definition)
+                )
                 .where(Portfolio.id == portfolio_id)
             )
             result = await db.execute(stmt)
@@ -309,23 +297,24 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             conviction_summary = await self._get_conviction_summary(db, portfolio.user_id)
 
             # Squad agents（使用实际的agent_weights配置）
-            if portfolio.agent_weights:
+            agent_weights = portfolio.instance_params.get('agent_weights') if portfolio.instance_params else None
+            if agent_weights:
                 # 使用数据库中保存的权重
                 squad_agents = [
                     SquadAgent(
                         name="The Oracle",
                         role="MacroAgent",
-                        weight=f"{int(portfolio.agent_weights.get('macro', 0.4) * 100)}%"
+                        weight=f"{int(agent_weights.get('macro', 0.4) * 100)}%"
                     ),
                     SquadAgent(
                         name="Data Warden",
                         role="OnChainAgent",
-                        weight=f"{int(portfolio.agent_weights.get('onchain', 0.4) * 100)}%"
+                        weight=f"{int(agent_weights.get('onchain', 0.4) * 100)}%"
                     ),
                     SquadAgent(
                         name="Momentum Scout",
                         role="TAAgent",
-                        weight=f"{int(portfolio.agent_weights.get('ta', 0.2) * 100)}%"
+                        weight=f"{int(agent_weights.get('ta', 0.2) * 100)}%"
                     ),
                 ]
             else:
@@ -338,11 +327,25 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # 获取最近操作记录
             recent_activities = await self._get_recent_activities(db, portfolio_id)
 
-            # 策略参数（使用真实的重平衡周期值）
+            # 策略参数（使用真实的数据库值）
             strategy_params = dict(self.STRATEGY_PARAMETERS)
-            strategy_params["rebalance_period"] = self._format_rebalance_period(
-                portfolio.rebalance_period_minutes
-            )
+
+            # 从策略模板获取真实的rebalance_period（优先级：模板JSONB > 模板字段 > 默认值）
+            if portfolio.strategy_definition:
+                definition = portfolio.strategy_definition
+                rebalance_period = definition.default_params.get('rebalance_period_minutes') if definition.default_params else None
+                if not rebalance_period:
+                    rebalance_period = definition.rebalance_period_minutes
+                if not rebalance_period:
+                    rebalance_period = 10
+            else:
+                rebalance_period = portfolio.instance_params.get('rebalance_period_minutes', 10) if portfolio.instance_params else 10
+
+            strategy_params["rebalance_period"] = self._format_rebalance_period(rebalance_period)
+
+            # 从策略实例获取真实的risk_level
+            strategy_params["risk_level"] = self._format_risk_level(portfolio.risk_level or "medium")
+
             parameters = StrategyParameters(**strategy_params)
 
             # 生成标签
@@ -403,7 +406,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 performance_history=performance_history,
                 recent_activities=recent_activities,
                 parameters=parameters,
-                philosophy=self.STRATEGY_PHILOSOPHY,
+                philosophy=portfolio.strategy_definition.philosophy if portfolio.strategy_definition and portfolio.strategy_definition.philosophy else self.STRATEGY_PHILOSOPHY,
                 holdings=holdings_info,
                 total_unrealized_pnl=float(total_unrealized_pnl),
                 total_realized_pnl=float(total_realized_pnl),
@@ -546,10 +549,10 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         bullish_count = portfolio.consecutive_bullish_count or 0
         bearish_count = portfolio.consecutive_bearish_count or 0
 
-        # 查询最近的策略执行记录
+        # 查询最近的策略执行记录 - 只查询当前 portfolio 的记录
         stmt = (
             select(StrategyExecution)
-            .where(StrategyExecution.user_id == user_id)
+            .where(StrategyExecution.portfolio_id == portfolio_id)
             .order_by(StrategyExecution.execution_time.desc())
             .limit(limit)
         )
@@ -622,7 +625,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
     ) -> List[AgentContribution]:
         """获取策略执行中各个Agent的贡献详情"""
 
-        # 查询该策略执行关联的所有Agent执行记录
+        # 首先尝试通过 strategy_execution_id 直接查询（单独执行的情况）
         stmt = (
             select(AgentExecution)
             .where(AgentExecution.strategy_execution_id == execution_id)
@@ -630,6 +633,33 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         )
         result = await db.execute(stmt)
         agent_execs = result.scalars().all()
+
+        # 如果查询为空，说明是批量执行，需要通过时间窗口查询
+        if not agent_execs:
+            # 获取当前策略执行的时间
+            from app.models.strategy_execution import StrategyExecution
+            stmt_exec = select(StrategyExecution).where(StrategyExecution.id == execution_id)
+            result_exec = await db.execute(stmt_exec)
+            strategy_exec = result_exec.scalar_one_or_none()
+
+            if strategy_exec:
+                # 批量执行时，agent_executions 的时间略早于 strategy_execution
+                # 使用 ±10秒的时间窗口查询（agent分析通常在5秒内完成）
+                from datetime import timedelta
+                time_start = strategy_exec.execution_time - timedelta(seconds=10)
+                time_end = strategy_exec.execution_time + timedelta(seconds=5)
+
+                stmt = (
+                    select(AgentExecution)
+                    .where(
+                        AgentExecution.strategy_execution_id.is_(None),  # 批量执行的记录
+                        AgentExecution.executed_at >= time_start,
+                        AgentExecution.executed_at <= time_end,
+                    )
+                    .order_by(AgentExecution.executed_at.desc())
+                )
+                result = await db.execute(stmt)
+                agent_execs = result.scalars().all()
 
         # Agent显示名称映射
         agent_display_names = {
@@ -661,20 +691,29 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         """获取策略执行详情，包括所有agent调用过程和交易记录"""
         try:
             # 查询策略执行记录
-            stmt = (
-                select(StrategyExecution)
-                .options(selectinload(StrategyExecution.agent_executions))
-                .where(StrategyExecution.id == execution_id)
-            )
+            stmt = select(StrategyExecution).where(StrategyExecution.id == execution_id)
             result = await db.execute(stmt)
             execution = result.scalar_one_or_none()
 
             if not execution:
                 raise ValueError(f"Execution {execution_id} not found")
 
+            # 🆕 通过 template_execution_batch_id 查询关联的 agent_executions
+            from app.models.agent_execution import AgentExecution
+
+            agent_executions_list = []
+            if execution.template_execution_batch_id:
+                agent_stmt = (
+                    select(AgentExecution)
+                    .where(AgentExecution.template_execution_batch_id == execution.template_execution_batch_id)
+                    .order_by(AgentExecution.executed_at)
+                )
+                agent_result = await db.execute(agent_stmt)
+                agent_executions_list = agent_result.scalars().all()
+
             # 构建agent执行详情列表
             agent_executions = []
-            for agent_exec in execution.agent_executions:
+            for agent_exec in agent_executions_list:
                 agent_detail = AgentExecutionDetail(
                     id=str(agent_exec.id),
                     agent_name=agent_exec.agent_name,
@@ -771,6 +810,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
         buy_threshold: Optional[float] = None,
         partial_sell_threshold: Optional[float] = None,
         full_sell_threshold: Optional[float] = None,
+        is_admin: bool = False,
     ) -> dict:
         """
         更新策略参数设置
@@ -794,67 +834,84 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             dict: 更新结果
         """
         try:
-            # 获取投资组合
-            result = await db.execute(
-                select(Portfolio).where(
-                    Portfolio.id == portfolio_id,
-                    Portfolio.user_id == user_id,
-                )
+            logger.info(
+                f"开始更新策略设置 - portfolio_id={portfolio_id}, user_id={user_id}, is_admin={is_admin}, "
+                f"rebalance_period={rebalance_period_minutes}, agent_weights={agent_weights}"
             )
+
+            # 获取投资组合
+            # 如果是管理员，可以修改任何策略；否则只能修改自己的策略
+            if is_admin:
+                result = await db.execute(
+                    select(Portfolio).where(Portfolio.id == portfolio_id)
+                )
+            else:
+                result = await db.execute(
+                    select(Portfolio).where(
+                        Portfolio.id == portfolio_id,
+                        Portfolio.user_id == user_id,
+                    )
+                )
             portfolio = result.scalar_one_or_none()
 
             if not portfolio:
                 raise ValueError(f"投资组合不存在或无权限访问: {portfolio_id}")
 
+            # 获取当前instance_params
+            current_params = portfolio.instance_params or {}
+
             # 记录更新前的值
-            old_period = portfolio.rebalance_period_minutes
-            old_weights = portfolio.agent_weights
+            old_period = current_params.get('rebalance_period_minutes')
+            old_weights = current_params.get('agent_weights')
 
             updated_fields = []
 
             # 更新执行周期（如果提供）
             if rebalance_period_minutes is not None:
-                portfolio.rebalance_period_minutes = rebalance_period_minutes
+                current_params['rebalance_period_minutes'] = rebalance_period_minutes
                 updated_fields.append(f"执行周期: {old_period} -> {rebalance_period_minutes}分钟")
 
             # 更新Agent权重（如果提供）
             if agent_weights is not None:
-                portfolio.agent_weights = agent_weights
+                current_params['agent_weights'] = agent_weights
                 updated_fields.append(f"Agent权重: {old_weights} -> {agent_weights}")
 
             # 更新连续信号配置（如果提供）
             if consecutive_signal_threshold is not None:
-                portfolio.consecutive_signal_threshold = consecutive_signal_threshold
+                current_params['consecutive_signal_threshold'] = consecutive_signal_threshold
                 updated_fields.append(f"连续信号阈值: {consecutive_signal_threshold}")
 
             if acceleration_multiplier_min is not None:
-                portfolio.acceleration_multiplier_min = acceleration_multiplier_min
+                current_params['acceleration_multiplier_min'] = acceleration_multiplier_min
                 updated_fields.append(f"加速乘数最小值: {acceleration_multiplier_min}")
 
             if acceleration_multiplier_max is not None:
-                portfolio.acceleration_multiplier_max = acceleration_multiplier_max
+                current_params['acceleration_multiplier_max'] = acceleration_multiplier_max
                 updated_fields.append(f"加速乘数最大值: {acceleration_multiplier_max}")
 
             # 更新交易阈值配置（如果提供）
             if fg_circuit_breaker_threshold is not None:
-                portfolio.fg_circuit_breaker_threshold = fg_circuit_breaker_threshold
+                current_params['fg_circuit_breaker_threshold'] = fg_circuit_breaker_threshold
                 updated_fields.append(f"FG熔断阈值: {fg_circuit_breaker_threshold}")
 
             if fg_position_adjust_threshold is not None:
-                portfolio.fg_position_adjust_threshold = fg_position_adjust_threshold
+                current_params['fg_position_adjust_threshold'] = fg_position_adjust_threshold
                 updated_fields.append(f"FG仓位调整阈值: {fg_position_adjust_threshold}")
 
             if buy_threshold is not None:
-                portfolio.buy_threshold = buy_threshold
+                current_params['buy_threshold'] = buy_threshold
                 updated_fields.append(f"买入阈值: {buy_threshold}")
 
             if partial_sell_threshold is not None:
-                portfolio.partial_sell_threshold = partial_sell_threshold
+                current_params['partial_sell_threshold'] = partial_sell_threshold
                 updated_fields.append(f"部分减仓阈值: {partial_sell_threshold}")
 
             if full_sell_threshold is not None:
-                portfolio.full_sell_threshold = full_sell_threshold
+                current_params['full_sell_threshold'] = full_sell_threshold
                 updated_fields.append(f"全部清仓阈值: {full_sell_threshold}")
+
+            # 更新portfolio的instance_params
+            portfolio.instance_params = current_params
 
             portfolio.updated_at = datetime.utcnow()
 
@@ -862,7 +919,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             await db.refresh(portfolio)
 
             logger.info(
-                f"更新策略设置成功 - 组合: {portfolio.name}, "
+                f"更新策略设置成功 - 组合: {portfolio.instance_name or portfolio.name}, "
                 f"更新内容: {', '.join(updated_fields) if updated_fields else '无变更'}"
             )
 
@@ -873,25 +930,28 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
 
                 strategy_scheduler.update_portfolio_job(
                     portfolio_id=str(portfolio.id),
-                    portfolio_name=portfolio.name,
+                    portfolio_name=portfolio.instance_name or portfolio.name or "Unknown",
                     period_minutes=rebalance_period_minutes,
                 )
-                logger.info(f"已更新活跃策略的调度任务: {portfolio.name}")
+                logger.info(f"已更新活跃策略的调度任务: {portfolio.instance_name or portfolio.name}")
+
+            # 获取更新后的参数
+            updated_params = portfolio.instance_params or {}
 
             return {
                 "success": True,
                 "message": "策略设置已更新",
                 "portfolio_id": str(portfolio.id),
-                "rebalance_period_minutes": portfolio.rebalance_period_minutes,
-                "agent_weights": portfolio.agent_weights,
-                "consecutive_signal_threshold": portfolio.consecutive_signal_threshold,
-                "acceleration_multiplier_min": portfolio.acceleration_multiplier_min,
-                "acceleration_multiplier_max": portfolio.acceleration_multiplier_max,
-                "fg_circuit_breaker_threshold": portfolio.fg_circuit_breaker_threshold,
-                "fg_position_adjust_threshold": portfolio.fg_position_adjust_threshold,
-                "buy_threshold": portfolio.buy_threshold,
-                "partial_sell_threshold": portfolio.partial_sell_threshold,
-                "full_sell_threshold": portfolio.full_sell_threshold,
+                "rebalance_period_minutes": updated_params.get('rebalance_period_minutes'),
+                "agent_weights": updated_params.get('agent_weights'),
+                "consecutive_signal_threshold": updated_params.get('consecutive_signal_threshold'),
+                "acceleration_multiplier_min": updated_params.get('acceleration_multiplier_min'),
+                "acceleration_multiplier_max": updated_params.get('acceleration_multiplier_max'),
+                "fg_circuit_breaker_threshold": updated_params.get('fg_circuit_breaker_threshold'),
+                "fg_position_adjust_threshold": updated_params.get('fg_position_adjust_threshold'),
+                "buy_threshold": updated_params.get('buy_threshold'),
+                "partial_sell_threshold": updated_params.get('partial_sell_threshold'),
+                "full_sell_threshold": updated_params.get('full_sell_threshold'),
                 "updated_fields": updated_fields,
             }
 
@@ -933,18 +993,18 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # 计算偏移量
             offset = (page - 1) * page_size
 
-            # 查询总数
+            # 查询总数 - 只查询当前 portfolio 的记录
             count_stmt = (
                 select(func.count(StrategyExecution.id))
-                .where(StrategyExecution.user_id == user_id)
+                .where(StrategyExecution.portfolio_id == portfolio_id)
             )
             total_result = await db.execute(count_stmt)
             total = total_result.scalar_one()
 
-            # 查询策略执行记录（分页）
+            # 查询策略执行记录（分页） - 只查询当前 portfolio 的记录
             stmt = (
                 select(StrategyExecution)
-                .where(StrategyExecution.user_id == user_id)
+                .where(StrategyExecution.portfolio_id == portfolio_id)
                 .order_by(StrategyExecution.execution_time.desc())
                 .offset(offset)
                 .limit(page_size)
@@ -1076,7 +1136,7 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
                 trade_response = TradeResponse(
                     id=str(trade.id),
                     symbol=trade.symbol,
-                    trade_type=trade.trade_type,
+                    trade_type=trade.trade_type.upper(),  # 转换为大写
                     amount=trade.amount,
                     price=trade.price,
                     total_value=trade.total_value,
@@ -1154,25 +1214,22 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
 
             # 4. 克隆策略模板创建新的 Portfolio 实例
             import uuid
+
+            # 从模板复制instance_params
+            template_params = template_portfolio.instance_params or {}
+
             new_portfolio = Portfolio(
                 id=uuid.uuid4(),
                 user_id=user_id,
                 name=template_portfolio.name,
-                strategy_name=template_portfolio.instance_name,
+                instance_name=template_portfolio.instance_name,
+                instance_description=template_portfolio.instance_description,
+                strategy_definition_id=template_portfolio.strategy_definition_id,
+                instance_params=template_params.copy(),
                 initial_balance=Decimal(str(initial_balance)),
                 current_balance=Decimal(str(initial_balance)),
                 total_value=Decimal(str(initial_balance)),
                 is_active=True,
-                rebalance_period_minutes=template_portfolio.rebalance_period_minutes,
-                agent_weights=template_portfolio.agent_weights,
-                consecutive_signal_threshold=template_portfolio.consecutive_signal_threshold,
-                acceleration_multiplier_min=template_portfolio.acceleration_multiplier_min,
-                acceleration_multiplier_max=template_portfolio.acceleration_multiplier_max,
-                fg_circuit_breaker_threshold=template_portfolio.fg_circuit_breaker_threshold,
-                fg_position_adjust_threshold=template_portfolio.fg_position_adjust_threshold,
-                buy_threshold=template_portfolio.buy_threshold,
-                partial_sell_threshold=template_portfolio.partial_sell_threshold,
-                full_sell_threshold=template_portfolio.full_sell_threshold,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
@@ -1184,7 +1241,8 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
             # 5. 添加到调度器（启动定时执行）
             try:
                 from app.services.strategy.scheduler import strategy_scheduler
-                await strategy_scheduler.add_portfolio_task(new_portfolio.id, new_portfolio.rebalance_period_minutes)
+                rebalance_period = new_portfolio.instance_params.get('rebalance_period_minutes', 10) if new_portfolio.instance_params else 10
+                await strategy_scheduler.add_portfolio_task(new_portfolio.id, rebalance_period)
                 logger.info(f"[Deploy] 已将策略 {new_portfolio.id} 添加到调度器")
             except Exception as e:
                 logger.warning(f"[Deploy] 添加调度任务失败（非致命错误）: {e}")

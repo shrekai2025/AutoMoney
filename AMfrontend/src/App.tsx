@@ -145,7 +145,7 @@ function MobileNav() {
 
 // Main app content component
 function AppContent() {
-  const { isLoading } = useAuth();
+  const { isLoading, error } = useAuth();
 
   // Global loading screen - wait for auth to complete
   if (isLoading) {
@@ -169,6 +169,12 @@ function AppContent() {
         </div>
       </div>
     );
+  }
+
+  // Show error state if authentication failed (but allow app to continue)
+  // The user can still use the app, but some features may be limited
+  if (error && !isLoading) {
+    console.warn('[App] Authentication error (non-blocking):', error);
   }
 
   return (

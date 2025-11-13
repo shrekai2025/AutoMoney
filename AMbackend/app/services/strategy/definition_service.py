@@ -170,10 +170,12 @@ class DefinitionService:
         instance_name: Optional[str] = None,
         instance_description: Optional[str] = None,
         instance_params: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        risk_level: Optional[str] = "medium",
     ) -> Portfolio:
         """
         从策略模板创建实例
-        
+
         Args:
             db: 数据库会话
             definition_id: 策略模板ID
@@ -182,10 +184,12 @@ class DefinitionService:
             instance_name: 实例名称（可选，不提供则自动生成）
             instance_description: 实例描述（可选）
             instance_params: 实例参数（可选，不提供则使用模板默认值）
-            
+            tags: 策略标签（可选）
+            risk_level: 风险程度（可选，默认medium）
+
         Returns:
             创建的Portfolio实例
-            
+
         Raises:
             ValueError: 如果模板或用户不存在
         """
@@ -223,19 +227,24 @@ class DefinitionService:
             instance_name=instance_name,
             instance_description=instance_description,
             instance_params=final_instance_params,
-            
+            tags=tags or [],
+            risk_level=risk_level or "medium",
+
+            # 向后兼容：name字段与instance_name相同
+            name=instance_name,
+
             # 资金相关
             initial_balance=Decimal(str(initial_balance)),
             current_balance=Decimal(str(initial_balance)),
             total_value=Decimal(str(initial_balance)),
-            
+
             # 状态
             is_active=True,  # 创建后自动激活
-            
+
             # 运行时状态初始化
             consecutive_bullish_count=0,
             consecutive_bearish_count=0,
-            
+
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )

@@ -24,7 +24,9 @@ class Portfolio(Base):
     # 实例标识
     instance_name = Column(String(200), nullable=False, comment="实例名称，用户自定义")
     instance_description = Column(Text, nullable=True, comment="实例描述，用户可选")
-    
+    tags = Column(JSONB, server_default='[]', comment="策略标签（如 Macro-Driven, Low-Medium Risk）")
+    risk_level = Column(String(20), server_default='medium', comment="风险程度: low, medium, high")
+
     # 实例参数（从模板复制而来，独立修改）
     instance_params = Column(JSONB, nullable=False, comment="实例独立参数配置")
     

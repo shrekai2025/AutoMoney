@@ -1,273 +1,54 @@
-# ============================================
-# AutoMoney Project .gitignore
-# ============================================
-
-# ==================== SECRETS & CREDENTIALS ====================
-# Environment variables and secrets
-.env
-.env.local
-.env.*.local
-*.env
-!.env.example
-
-# API Keys and credentials
-**/api_keys.md
-**/api\ keys.md
-*apikey*
-*api-key*
-*credential*
-*secret*
-!**/example-*
-
-# Firebase
-firebase-service-account.json
-serviceAccountKey.json
-**/firebase-adminsdk-*.json
-
-# SSH Keys
-*.pem
-*.key
-id_rsa
-id_rsa.pub
-
-# ==================== PYTHON / BACKEND ====================
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
-# Virtual environments
+.Python
 venv/
 env/
-ENV/
-.venv
-.ENV
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-# Python build artifacts only (not frontend source code)
-**/venv/lib/
-**/venv/lib64/
-!AMfrontend/src/lib/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# Alembic
-alembic/versions/*.pyc
-
-# ==================== NODE.JS / FRONTEND ====================
-# Dependencies
-node_modules/
-jspm_packages/
-
-# Production builds
-AMfrontend/build/
-AMfrontend/dist/
-AMfrontend/.next/
-AMfrontend/out/
-
-# Testing
-coverage/
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# Package manager locks (comment out if you want to commit them)
-# package-lock.json
-# yarn.lock
-# pnpm-lock.yaml
-
-# TypeScript cache
-*.tsbuildinfo
-
-# ==================== DATABASE ====================
-# SQLite databases
-*.db
-*.sqlite
-*.sqlite3
-
-# PostgreSQL
-*.dump
-*.sql
-
-# Database backups
-backup/
-backups/
-*.backup
-
-# ==================== LOGS ====================
-logs/
-*.log
-log/
-*.log.*
-log_*
-.pids/
-
-# ==================== IDE / EDITOR ====================
-# VSCode
+# IDEs
 .vscode/
-*.code-workspace
-!.vscode/extensions.json
-!.vscode/settings.json
-
-# PyCharm
 .idea/
-*.iml
-*.iws
-
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# Vim
 *.swp
 *.swo
 *~
 
-# Emacs
-*~
-\#*\#
-.\#*
+# Logs - 统一到 .pids 目录
+*.log
+.pids/
 
-# ==================== OS SPECIFIC ====================
-# macOS
+# OS
 .DS_Store
-.AppleDouble
-.LSOverride
-._*
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
-
-# Windows
 Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
-ehthumbs_vista.db
-*.stackdump
-[Dd]esktop.ini
-$RECYCLE.BIN/
-*.cab
-*.msi
-*.msix
-*.msm
-*.msp
-*.lnk
 
-# Linux
-*~
-.directory
-.Trash-*
-.nfs*
+# Environment
+.env
+.env.local
 
-# ==================== DOCKER ====================
-*.dockerignore.swp
-docker-compose.override.yml
+# Frontend
+node_modules/
+dist/
+build/
+.next/
 
-# ==================== MISC ====================
-# Temporary files
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary
 tmp/
 temp/
 *.tmp
-*.temp
-.cache/
+*.bak
+*.old
 
-# Archives
-*.zip
-*.tar
-*.tar.gz
-*.rar
-*.7z
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
 
-# Process IDs
-*.pid
-
-# Claude Code
-.claude/
-
-# User-specific folders (example data, drafts, etc.)
-drafts/
-examples/
-sandbox/
-
-# Large data files
-*.csv
-*.parquet
-*.h5
-*.hdf5
-data/
-datasets/
-
-# Certificates
-*.crt
-*.cer
-*.p12
-*.pfx
-
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-
-# Kubernetes
-*.kubeconfig
-
-# Documentation build
+# Documentation
 docs/_build/
-site/
-
-# docs
-/docs
-/AMbackend/DEV_docs
-/AMbackend/llm_provider

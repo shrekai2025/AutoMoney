@@ -18,6 +18,14 @@ class StrategyExecution(Base):
     strategy_name = Column(String(100), nullable=False, index=True)
     status = Column(String(20), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    portfolio_id = Column(UUID(as_uuid=True), ForeignKey("portfolios.id"), nullable=True)
+
+    # 🆕 批量执行批次ID（用于关联同一批次的executions）
+    template_execution_batch_id = Column(
+        UUID(as_uuid=True),
+        index=True,
+        comment="批量执行批次ID - 用于关联同一批次的agent和strategy executions"
+    )
 
     # Market data
     market_snapshot = Column(JSONB, nullable=False)
@@ -46,6 +54,7 @@ class StrategyExecution(Base):
 
     __table_args__ = (
         Index('idx_executions_user_time', 'user_id', 'execution_time'),
+        Index('idx_executions_portfolio_time', 'portfolio_id', 'execution_time'),
     )
 
     def __repr__(self):

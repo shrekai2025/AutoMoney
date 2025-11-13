@@ -21,6 +21,11 @@ class AdminStrategyItem(BaseModel):
     consecutive_signal_threshold: Optional[int] = Field(None, description="连续信号阈值")
     acceleration_multiplier_min: Optional[float] = Field(None, description="加速乘数最小值")
     acceleration_multiplier_max: Optional[float] = Field(None, description="加速乘数最大值")
+    fg_circuit_breaker_threshold: Optional[int] = Field(None, description="市场恐慌熔断阈值")
+    fg_position_adjust_threshold: Optional[int] = Field(None, description="仓位调整阈值")
+    buy_threshold: Optional[float] = Field(None, description="买入阈值")
+    partial_sell_threshold: Optional[float] = Field(None, description="部分卖出阈值")
+    full_sell_threshold: Optional[float] = Field(None, description="全部卖出阈值")
     created_at: str = Field(..., description="创建时间")
     updated_at: Optional[str] = Field(None, description="更新时间")
 

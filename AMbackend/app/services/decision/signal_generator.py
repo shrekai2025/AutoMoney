@@ -99,8 +99,8 @@ class SignalGenerator:
                 - fg_circuit_breaker_threshold: Fear & Greed熔断阈值(默认20)
                 - fg_position_adjust_threshold: Fear & Greed仓位调整阈值(默认30)
                 - buy_threshold: 买入阈值(默认50)
-                - partial_sell_threshold: 部分减仓阈值(默认50)
                 - full_sell_threshold: 全部清仓阈值(默认45)
+                注: 部分减仓区间为 [full_sell_threshold, buy_threshold)
 
         Returns:
             SignalOutput: 交易信号和详细信息
@@ -120,8 +120,8 @@ class SignalGenerator:
         fg_circuit_breaker = portfolio_state.get("fg_circuit_breaker_threshold", 20)
         fg_position_adjust = portfolio_state.get("fg_position_adjust_threshold", 30)
         buy_threshold = portfolio_state.get("buy_threshold", 50)
-        partial_sell_threshold = portfolio_state.get("partial_sell_threshold", 50)
         full_sell_threshold = portfolio_state.get("full_sell_threshold", 45)
+        # 移除 partial_sell_threshold,直接使用 buy_threshold 作为部分减仓的上界
 
         # Step 1: 检查熔断规则
         circuit_breaker = self._check_circuit_breaker(market_data, fg_circuit_breaker)
@@ -148,10 +148,10 @@ class SignalGenerator:
             reasons.append(f"✅ 看多买入 (信念分数: {conviction_score:.1f}/100, 阈值: {buy_threshold})")
 
         elif conviction_score >= full_sell_threshold:
-            # full_sell_threshold - partial_sell_threshold: 部分减仓
+            # full_sell_threshold - buy_threshold: 部分减仓
             signal = TradeSignal.SELL
-            signal_strength = (partial_sell_threshold - conviction_score) / (partial_sell_threshold - full_sell_threshold) if (partial_sell_threshold - full_sell_threshold) > 0 else 0
-            reasons.append(f"🟡 部分减仓 (信念分数: {conviction_score:.1f}/100, 阈值: {full_sell_threshold}-{partial_sell_threshold})")
+            signal_strength = (buy_threshold - conviction_score) / (buy_threshold - full_sell_threshold) if (buy_threshold - full_sell_threshold) > 0 else 0
+            reasons.append(f"🟡 部分减仓 (信念分数: {conviction_score:.1f}/100, 阈值: {full_sell_threshold}-{buy_threshold})")
 
         else:
             # < full_sell_threshold: 全部清仓
@@ -186,7 +186,7 @@ class SignalGenerator:
             position_multiplier,
             fg_position_adjust,
             full_sell_threshold,
-            partial_sell_threshold
+            buy_threshold
         )
 
         # Step 5: 评估风险等级
@@ -265,7 +265,7 @@ class SignalGenerator:
         position_multiplier: float = 1.0,
         fg_position_adjust_threshold: int = 30,
         full_sell_threshold: float = 45,
-        partial_sell_threshold: float = 50
+        buy_threshold: float = 50
     ) -> float:
         """
         计算仓位大小
@@ -289,9 +289,9 @@ class SignalGenerator:
             base_position *= position_multiplier
 
         elif conviction_score >= full_sell_threshold:
-            # full_sell_threshold - partial_sell_threshold: 部分减仓，动态计算卖出比例
-            # conviction_score从full_sell_threshold到partial_sell_threshold，卖出比例从50%线性减少到0%
-            sell_ratio = (partial_sell_threshold - conviction_score) / (partial_sell_threshold - full_sell_threshold) if (partial_sell_threshold - full_sell_threshold) > 0 else 0
+            # full_sell_threshold - buy_threshold: 部分减仓，动态计算卖出比例
+            # conviction_score从full_sell_threshold到buy_threshold，卖出比例从50%线性减少到0%
+            sell_ratio = (buy_threshold - conviction_score) / (buy_threshold - full_sell_threshold) if (buy_threshold - full_sell_threshold) > 0 else 0
             return 0.5 * sell_ratio  # 最多卖出50%
 
         else:  # conviction_score < full_sell_threshold

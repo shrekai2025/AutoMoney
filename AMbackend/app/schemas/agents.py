@@ -127,6 +127,82 @@ class TechnicalAnalysisOutput(AgentOutput):
     llm_response: Optional[str] = Field(default=None, description="Raw LLM response")
 
 
+class RegimeFilterOutput(BaseModel):
+    """Output schema for RegimeFilterAgent (Momentum Strategy)"""
+    
+    agent_name: str = Field(default="regime_filter_agent")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    
+    # 核心输出
+    regime_score: float = Field(
+        ge=0.0, le=100.0, 
+        description="Market regime score: 0-100 (higher = healthier market)"
+    )
+    regime_classification: str = Field(
+        description="Regime classification: DANGEROUS/NEUTRAL/HEALTHY/VERY_HEALTHY"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0, 
+        description="Confidence in the regime assessment"
+    )
+    reasoning: str = Field(description="Detailed reasoning for the regime score")
+    
+    # 组成部分
+    component_scores: Dict[str, float] = Field(
+        description="Component scores for each dimension (normalized -1 to +1)"
+    )
+    key_factors: list[str] = Field(
+        default=[], 
+        description="Key factors influencing the regime"
+    )
+    
+    # 风险评估
+    risk_level: str = Field(description="Risk level: LOW/MEDIUM/HIGH")
+    recommended_multiplier: float = Field(
+        ge=0.3, le=1.6,
+        description="Recommended position multiplier based on regime"
+    )
+    
+    # 辅助信息
+    base_score: Optional[float] = Field(
+        default=None,
+        description="Base score from rule engine (before LLM adjustment)"
+    )
+    llm_adjustment: Optional[float] = Field(
+        default=None,
+        description="LLM's adjustment to the base score"
+    )
+
+
+class TAMomentumOutput(BaseModel):
+    """Output schema for TAMomentumAgent (Momentum Strategy)"""
+    
+    agent_name: str = Field(default="ta_momentum_agent")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    
+    # 每个币种的分析结果
+    asset_analyses: Dict[str, Dict[str, Any]] = Field(
+        description="Technical analysis for each asset (BTC/ETH/SOL)"
+    )
+    
+    # 最佳交易机会
+    best_opportunity: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Best trading opportunity across all assets"
+    )
+    
+    # 全局技术环境评估
+    overall_momentum_strength: float = Field(
+        ge=0.0, le=1.0,
+        description="Overall momentum strength across all assets"
+    )
+    market_trend: str = Field(
+        description="Overall market trend: STRONG_UPTREND/UPTREND/NEUTRAL/DOWNTREND/STRONG_DOWNTREND"
+    )
+    
+    reasoning: str = Field(description="Overall technical reasoning")
+
+
 class AggregatedAnalysis(BaseModel):
     """Aggregated analysis from all agents"""
 

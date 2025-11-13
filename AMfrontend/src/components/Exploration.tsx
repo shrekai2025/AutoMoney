@@ -1,77 +1,121 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Progress } from "./ui/progress";
 import { ScrollArea } from "./ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Skeleton } from "./ui/skeleton";
 import { TrendingUp, TrendingDown, Activity, Shield, Zap, Eye, Database, Target, ExternalLink } from "lucide-react";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import aiCommanderImage from "figma:asset/c5bd439c73b523a0fe77e12f24d55c9e5fb9c986.png";
-
-// Mock real-time data
-const generateScore = (base: number) => {
-  return base + (Math.random() - 0.5) * 0.3;
-};
+import { explorationApi, type SquadDecisionCore, type CommanderAnalysis, type ActiveDirective, type DirectiveHistory, type DataStream, type AvailableStrategies } from "../lib/explorationApi";
 
 export function Exploration() {
-  const [macroScore, setMacroScore] = useState(0.8);
-  const [onChainScore, setOnChainScore] = useState(0.7);
-  const [taScore, setTaScore] = useState(0.5);
-  const [convictionScore, setConvictionScore] = useState(75);
-  const [countdown, setCountdown] = useState(5750);
+  // API数据状态
+  const [squadData, setSquadData] = useState<SquadDecisionCore | null>(null);
+  const [commanderData, setCommanderData] = useState<CommanderAnalysis | null>(null);
+  const [directiveData, setDirectiveData] = useState<ActiveDirective | null>(null);
+  const [directiveHistory, setDirectiveHistory] = useState<DirectiveHistory | null>(null);
+  const [dataStream, setDataStream] = useState<DataStream | null>(null);
+  const [availableStrategies, setAvailableStrategies] = useState<AvailableStrategies | null>(null);
+  
+  // UI状态
+  const [selectedStrategyId, setSelectedStrategyId] = useState<number | undefined>(undefined);
+  const [isLive, setIsLive] = useState(false);
+  const [lastPollTime, setLastPollTime] = useState<Date | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  
+  // 30秒轮询刷新函数
+  const pollData = useCallback(async () => {
+    try {
+      setPollError(null);
+      const startTime = new Date();
+      
+      // 并行获取所有数据
+      const [squad, commander, directive, history, stream, strategies] = await Promise.all([
+        explorationApi.getSquadDecisionCore(),
+        explorationApi.getCommanderAnalysis(selectedStrategyId),
+        explorationApi.getActiveDirective(selectedStrategyId),
+        explorationApi.getDirectiveHistory(selectedStrategyId, 100),
+        explorationApi.getDataStream(),
+        explorationApi.getAvailableStrategies(),
+      ]);
+      
+      setSquadData(squad);
+      setCommanderData(commander);
+      setDirectiveData(directive);
+      setDirectiveHistory(history);
+      setDataStream(stream);
+      setAvailableStrategies(strategies);
+      
+      setLastPollTime(startTime);
+      setIsLive(true); // 轮询成功，显示LIVE状态
+      setIsLoading(false); // 首次加载完成
+    } catch (error) {
+      console.error('Polling error:', error);
+      setPollError(error instanceof Error ? error.message : 'Unknown error');
+      setIsLive(false); // 轮询失败，隐藏LIVE状态
+      setIsLoading(false); // 即使出错也停止loading
+    }
+  }, [selectedStrategyId]);
 
-  // Simulate real-time score updates
+  // 初始加载和30秒轮询
   useEffect(() => {
+    // 立即执行一次
+    pollData();
+    
+    // 设置30秒轮询
     const interval = setInterval(() => {
-      setMacroScore(generateScore(0.8));
-      setOnChainScore(generateScore(0.7));
-      setTaScore(generateScore(0.5));
-      setConvictionScore(Math.floor(70 + Math.random() * 10));
-    }, 3000);
+      pollData();
+    }, 30000); // 30秒
 
     return () => clearInterval(interval);
-  }, []);
+  }, [pollData]);
 
-  // Countdown timer
+  // 本地倒计时状态（每秒更新）
+  const [localCountdown, setLocalCountdown] = useState<{ formatted: string; progress: number } | null>(null);
+  
+  // 倒计时本地更新（每秒更新一次，基于API返回的execution_time和countdown）
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCountdown(prev => (prev > 0 ? prev - 1 : 14400));
-    }, 1000);
+    if (!directiveData?.execution_time || !directiveData?.countdown) {
+      setLocalCountdown(null);
+      return;
+    }
+    
+    const updateCountdown = () => {
+      const executionTime = new Date(directiveData.execution_time!);
+      const now = new Date();
+      
+      // 从API返回的countdown获取remaining_seconds，计算period_seconds
+      const remainingSeconds = directiveData.countdown.remaining_seconds;
+      const elapsed = Math.floor((now.getTime() - executionTime.getTime()) / 1000);
+      const periodSeconds = elapsed + remainingSeconds; // 总周期 = 已过时间 + 剩余时间
+      
+      // 重新计算剩余时间（基于当前时间）
+      const remaining = Math.max(0, periodSeconds - elapsed);
+      
+      const hours = Math.floor(remaining / 3600);
+      const minutes = Math.floor((remaining % 3600) / 60);
+      const seconds = remaining % 60;
+      
+      const formatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      const progress = periodSeconds > 0 ? Math.min(100, (elapsed / periodSeconds) * 100) : 0;
+      
+      setLocalCountdown({ formatted, progress });
+    };
+    
+    // 立即更新一次
+    updateCountdown();
+    
+    // 每秒更新
+    const timer = setInterval(updateCountdown, 1000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [directiveData]);
 
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const getConvictionColor = (score: number) => {
-    if (score > 70) return "from-emerald-500 to-green-400";
-    if (score > 40) return "from-amber-500 to-yellow-400";
-    return "from-red-500 to-rose-400";
-  };
-
-  const getConvictionAnimation = (score: number) => {
-    if (score > 70) return "animate-pulse";
-    if (score > 40) return "";
-    return "animate-pulse";
-  };
-
-  const feedData = [
-    { type: "Macro", text: "CME Rate Prob: 80%", trend: "up" },
-    { type: "OnChain", text: "LTH Change: +2.01%", trend: "up" },
-    { type: "TA", text: "BTC RSI(14): 75.25", trend: "neutral" },
-    { type: "Risk", text: "ATR Volatility: 6.1% [High Freq]", trend: "down" },
-    { type: "Macro", text: "ETF Net Flow: +$250M", trend: "up" },
-    { type: "OnChain", text: "Exchange Flow: -10,000 BTC", trend: "up" },
-    { type: "TA", text: "Golden Cross Active", trend: "up" },
-    { type: "Sentiment", text: "Fear & Greed: 20 [Extreme Fear]", trend: "down" },
-  ];
-
+  // 假数据：Twitter Feed（暂时不接真实数据）
   const tweets = [
     { author: "@SEC_Chairman", text: "Digital asset enforcement will continue to be a priority...", time: "Just Now" },
     { author: "@realDonaldTrump", text: "Big announcement coming about the economy...", time: "5m ago" },
@@ -79,52 +123,6 @@ export function Exploration() {
     { author: "@VitalikButerin", text: "Excited about the progress on zkEVM technology...", time: "15m ago" },
     { author: "@CathieDWood", text: "Bitcoin remains our conviction buy for 2025.", time: "20m ago" },
   ];
-
-  // Mock historical directives data
-  const generateHistoricalDirectives = () => {
-    const directives = [];
-    const strategies = [
-      { name: "HODL-Wave Squad", subtitle: "Macro Swing Strategy" },
-      { name: "ArbitrageX Squad", subtitle: "High-Frequency Trading" },
-      { name: "MomentumPro Squad", subtitle: "Trend Following" },
-      { name: "StableGuard Squad", subtitle: "Stable Yield Strategy" },
-      { name: "DeFiYield Squad", subtitle: "Yield Optimizer" },
-      { name: "AIPredict Squad", subtitle: "Predictive Trading" },
-    ];
-    
-    const actions = [
-      { type: "BUY", asset: "BTC", amount: "0.75%", sentiment: "bullish" },
-      { type: "BUY", asset: "ETH", amount: "0.5%", sentiment: "bullish" },
-      { type: "SELL", asset: "BTC", amount: "0.3%", sentiment: "bearish" },
-      { type: "SELL", asset: "ETH", amount: "0.4%", sentiment: "bearish" },
-      { type: "HOLD", asset: "-", amount: "-", sentiment: "neutral" },
-    ];
-
-    const statuses = ["Accelerate Accumulation", "Reduce Exposure", "Hold Position", "Defensive Mode", "Rebalance"];
-    
-    for (let i = 0; i < 100; i++) {
-      const strategy = strategies[Math.floor(Math.random() * strategies.length)];
-      const action = actions[Math.floor(Math.random() * actions.length)];
-      const status = statuses[Math.floor(Math.random() * statuses.length)];
-      const conviction = Math.floor(Math.random() * 100);
-      const hoursAgo = i * 4; // Every 4 hours
-      
-      directives.push({
-        id: i,
-        timestamp: `${Math.floor(hoursAgo / 24)}d ${hoursAgo % 24}h ago`,
-        strategy: strategy.name,
-        strategySubtitle: strategy.subtitle,
-        status: status,
-        action: action,
-        conviction: conviction,
-        result: (Math.random() - 0.4) * 5 // Random result between -2% and +3%
-      });
-    }
-    
-    return directives;
-  };
-
-  const historicalDirectives = generateHistoricalDirectives();
 
   return (
     <div className="space-y-3">
@@ -137,60 +135,64 @@ export function Exploration() {
           </h1>
           <div className="flex items-center gap-2">
             <span className="text-slate-400 text-xs">Currently focused on:</span>
-            <Select defaultValue="hodl-wave" disabled={false}>
+            <Select 
+              value={selectedStrategyId?.toString() || "all"} 
+              onValueChange={(value) => {
+                if (value === "all") {
+                  setSelectedStrategyId(undefined);
+                } else {
+                  setSelectedStrategyId(parseInt(value));
+                }
+              }}
+            >
               <SelectTrigger className="w-[180px] h-6 text-xs bg-slate-800/50 border-slate-700 text-white">
-                <SelectValue />
+                <SelectValue placeholder="All Strategies" />
               </SelectTrigger>
               <SelectContent className="bg-slate-800 border-slate-700">
-                <SelectItem value="hodl-wave" className="text-xs text-white">
+                <SelectItem value="all" className="text-xs text-white">
                   <div className="flex items-center gap-2">
-                    <span>HODL-Wave Squad</span>
+                    <span>All Strategies</span>
                   </div>
                 </SelectItem>
-                <SelectItem value="arbitrage" disabled className="text-xs text-slate-500">
-                  <div className="flex items-center gap-2">
-                    <span>ArbitrageX Squad</span>
-                    <Badge className="bg-slate-700 text-slate-500 text-xs px-1 py-0">Locked</Badge>
-                  </div>
-                </SelectItem>
-                <SelectItem value="momentum" disabled className="text-xs text-slate-500">
-                  <div className="flex items-center gap-2">
-                    <span>MomentumPro Squad</span>
-                    <Badge className="bg-slate-700 text-slate-500 text-xs px-1 py-0">Locked</Badge>
-                  </div>
-                </SelectItem>
-                <SelectItem value="stable" disabled className="text-xs text-slate-500">
-                  <div className="flex items-center gap-2">
-                    <span>StableGuard Squad</span>
-                    <Badge className="bg-slate-700 text-slate-500 text-xs px-1 py-0">Locked</Badge>
-                  </div>
-                </SelectItem>
-                <SelectItem value="defi" disabled className="text-xs text-slate-500">
-                  <div className="flex items-center gap-2">
-                    <span>DeFiYield Squad</span>
-                    <Badge className="bg-slate-700 text-slate-500 text-xs px-1 py-0">Locked</Badge>
-                  </div>
-                </SelectItem>
-                <SelectItem value="ai" disabled className="text-xs text-slate-500">
-                  <div className="flex items-center gap-2">
-                    <span>AIPredict Squad</span>
-                    <Badge className="bg-slate-700 text-slate-500 text-xs px-1 py-0">Locked</Badge>
-                  </div>
-                </SelectItem>
+                {availableStrategies?.strategies.map((strategy) => (
+                  <SelectItem 
+                    key={strategy.id} 
+                    value={strategy.id.toString()} 
+                    className="text-xs text-white"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span>{strategy.display_name}</span>
+                    </div>
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
         </div>
         <div className="relative">
-          <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/50 text-sm px-3 py-1.5 shadow-lg shadow-blue-500/50" style={{ animation: 'breath 2s ease-in-out infinite' }}>
-            <div className="relative flex items-center gap-2">
-              <div className="relative">
-                <span className="w-2.5 h-2.5 bg-blue-400 rounded-full block"></span>
-                <span className="absolute inset-0 w-2.5 h-2.5 bg-blue-400 rounded-full" style={{ animation: 'pulse-ring 1.5s ease-out infinite' }}></span>
+          {isLive ? (
+            <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/50 text-sm px-3 py-1.5 shadow-lg shadow-blue-500/50" style={{ animation: 'breath 2s ease-in-out infinite' }}>
+              <div className="relative flex items-center gap-2">
+                <div className="relative">
+                  <span className="w-2.5 h-2.5 bg-blue-400 rounded-full block"></span>
+                  <span className="absolute inset-0 w-2.5 h-2.5 bg-blue-400 rounded-full" style={{ animation: 'pulse-ring 1.5s ease-out infinite' }}></span>
+                </div>
+                <span className="font-semibold">LIVE</span>
               </div>
-              <span className="font-semibold">LIVE</span>
+            </Badge>
+          ) : (
+            <Badge className="bg-slate-700/20 text-slate-400 border-slate-700/50 text-sm px-3 py-1.5">
+              <div className="relative flex items-center gap-2">
+                <span className="w-2.5 h-2.5 bg-slate-500 rounded-full block"></span>
+                <span className="font-semibold">OFFLINE</span>
+              </div>
+            </Badge>
+          )}
+          {pollError && (
+            <div className="absolute top-full mt-1 text-xs text-red-400">
+              {pollError}
             </div>
-          </Badge>
+          )}
         </div>
       </div>
 
@@ -204,144 +206,285 @@ export function Exploration() {
           </div>
 
           {/* MacroAgent - The Oracle */}
-          <Card className="bg-slate-900/50 border-blue-500/30 backdrop-blur-sm hover:border-blue-500/50 transition-all relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            <CardHeader className="pb-2 pt-3 px-3">
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/50 relative">
-                  <Eye className="w-5 h-5 text-white" />
-                  <div className="absolute inset-0 bg-blue-400/30 rounded-lg animate-pulse"></div>
-                </div>
-                <div className="flex-1">
-                  <CardTitle className="text-white text-xs">The Oracle</CardTitle>
-                  <p className="text-slate-500 text-xs">MacroAgent (40%)</p>
-                </div>
-                <div className={`text-right ${macroScore > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  <div className="text-sm font-mono">{macroScore > 0 ? '+' : ''}{macroScore.toFixed(2)}</div>
-                  <div className="text-xs text-slate-500">Score</div>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="px-3 pb-3 space-y-2">
-              {/* Core Inputs */}
-              <div className="space-y-1.5">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400">ETF Net Flow</span>
-                    <span className="text-emerald-400">+$250M</span>
+          {squadData?.squad.find(a => a.agent_name === 'macro_agent') ? (
+            (() => {
+              const agent = squadData.squad.find(a => a.agent_name === 'macro_agent')!;
+              return (
+                <Card className="bg-slate-900/50 border-blue-500/30 backdrop-blur-sm hover:border-blue-500/50 transition-all relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                  <CardHeader className="pb-2 pt-3 px-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/50 relative">
+                        <Eye className="w-5 h-5 text-white" />
+                        <div className="absolute inset-0 bg-blue-400/30 rounded-lg animate-pulse"></div>
+                      </div>
+                      <div className="flex-1">
+                        <CardTitle className="text-white text-xs">{agent.display_name}</CardTitle>
+                        <p className="text-slate-500 text-xs">MacroAgent ({agent.weight})</p>
+                      </div>
+                      <div className={`text-right ${agent.score > 0 ? 'text-emerald-400' : agent.score < 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                        <div className="text-sm font-mono">
+                          {agent.score > 0 ? (
+                            <span className="text-emerald-400">Bullish {Math.abs(agent.score).toFixed(0)}</span>
+                          ) : agent.score < 0 ? (
+                            <span className="text-red-400">Bearish {Math.abs(agent.score).toFixed(0)}</span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500">Score</div>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-3 space-y-2">
+                    {/* Core Inputs */}
+                    <div className="space-y-1.5">
+                      {agent.core_inputs.map((input, idx) => (
+                        <div key={idx}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="text-slate-400">{input.label}</span>
+                            <span className={input.value.includes('+') || input.value.includes('-') ? 
+                              (input.value.includes('+') ? 'text-emerald-400' : 'text-red-400') : 
+                              'text-blue-400'}>
+                              {input.value}
+                            </span>
+                          </div>
+                          {input.progress > 0 && (
+                            <Progress value={input.progress} className="h-1.5 bg-slate-800" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {/* LLM Conclusion */}
+                    <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        "{agent.reasoning}"
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })()
+          ) : isLoading ? (
+            <Card className="bg-slate-900/50 border-blue-500/30 backdrop-blur-sm">
+              <CardHeader className="pb-2 pt-3 px-3">
+                <div className="flex items-center gap-2">
+                  <Skeleton className="w-10 h-10 rounded-lg" />
+                  <div className="flex-1 space-y-1">
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-2 w-32" />
                   </div>
-                  <Progress value={75} className="h-1.5 bg-slate-800" />
+                  <Skeleton className="h-8 w-12" />
                 </div>
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400">Fed Cut Prob</span>
-                    <span className="text-blue-400">80%</span>
-                  </div>
-                  <Progress value={80} className="h-1.5 bg-slate-800" />
-                </div>
-              </div>
-              
-              {/* LLM Conclusion */}
-              <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  "Global liquidity easing expectations strong, institutional funds continue to flow in."
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-2">
+                <Skeleton className="h-3 w-full" />
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-16 w-full rounded" />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="bg-slate-900/50 border-blue-500/30 backdrop-blur-sm">
+              <CardContent className="px-3 py-3">
+                <p className="text-xs text-slate-400 text-center">No MacroAgent data available</p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* OnChainAgent - Data Warden */}
-          <Card className="bg-slate-900/50 border-emerald-500/30 backdrop-blur-sm hover:border-emerald-500/50 transition-all relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            <CardHeader className="pb-2 pt-3 px-3">
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/50 relative">
-                  <Database className="w-5 h-5 text-white" />
-                  <div className="absolute inset-0 bg-emerald-400/30 rounded-lg animate-pulse"></div>
-                </div>
-                <div className="flex-1">
-                  <CardTitle className="text-white text-xs">Data Warden</CardTitle>
-                  <p className="text-slate-500 text-xs">OnChainAgent (40%)</p>
-                </div>
-                <div className={`text-right ${onChainScore > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  <div className="text-sm font-mono">{onChainScore > 0 ? '+' : ''}{onChainScore.toFixed(2)}</div>
-                  <div className="text-xs text-slate-500">Score</div>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="px-3 pb-3 space-y-2">
-              {/* Core Inputs */}
-              <div className="space-y-1.5">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400">MVRV Z-Score</span>
-                    <span className="text-amber-400">2.5</span>
+          {squadData?.squad.find(a => a.agent_name === 'onchain_agent') ? (
+            (() => {
+              const agent = squadData.squad.find(a => a.agent_name === 'onchain_agent')!;
+              return (
+                <Card className="bg-slate-900/50 border-emerald-500/30 backdrop-blur-sm hover:border-emerald-500/50 transition-all relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                  <CardHeader className="pb-2 pt-3 px-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/50 relative">
+                        <Database className="w-5 h-5 text-white" />
+                        <div className="absolute inset-0 bg-emerald-400/30 rounded-lg animate-pulse"></div>
+                      </div>
+                      <div className="flex-1">
+                        <CardTitle className="text-white text-xs">{agent.display_name}</CardTitle>
+                        <p className="text-slate-500 text-xs">OnChainAgent ({agent.weight})</p>
+                      </div>
+                      <div className={`text-right ${agent.score > 0 ? 'text-emerald-400' : agent.score < 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                        <div className="text-sm font-mono">
+                          {agent.score > 0 ? (
+                            <span className="text-emerald-400">Bullish {Math.abs(agent.score).toFixed(0)}</span>
+                          ) : agent.score < 0 ? (
+                            <span className="text-red-400">Bearish {Math.abs(agent.score).toFixed(0)}</span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500">Score</div>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-3 space-y-2">
+                    {/* Core Inputs */}
+                    <div className="space-y-1.5">
+                      {agent.core_inputs.map((input, idx) => (
+                        <div key={idx}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="text-slate-400">{input.label}</span>
+                            <span className={
+                              input.label === 'Exchange Flow' && input.value.includes('-') ? 
+                                'text-emerald-400' : // Exchange流出是看涨（绿色）
+                              input.label === 'Exchange Flow' && !input.value.includes('-') && input.value !== 'N/A' ? 
+                                'text-red-400' : // Exchange流入是看跌（红色）
+                              input.value.includes('+') ? 
+                                'text-emerald-400' : 
+                              input.value.includes('-') && input.label !== 'Exchange Flow' ? 
+                                'text-red-400' : 
+                              'text-amber-400'
+                            }>
+                              {input.value}
+                            </span>
+                          </div>
+                          {input.progress > 0 && (
+                            <Progress value={input.progress} className="h-1.5 bg-slate-800" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {/* LLM Conclusion */}
+                    <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        "{agent.reasoning}"
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })()
+          ) : isLoading ? (
+            <Card className="bg-slate-900/50 border-emerald-500/30 backdrop-blur-sm">
+              <CardHeader className="pb-2 pt-3 px-3">
+                <div className="flex items-center gap-2">
+                  <Skeleton className="w-10 h-10 rounded-lg" />
+                  <div className="flex-1 space-y-1">
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-2 w-32" />
                   </div>
-                  <Progress value={60} className="h-1.5 bg-slate-800" />
+                  <Skeleton className="h-8 w-12" />
                 </div>
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400">Exchange Flow</span>
-                    <span className="text-emerald-400">-10K BTC</span>
-                  </div>
-                  <Progress value={85} className="h-1.5 bg-slate-800" />
-                </div>
-              </div>
-              
-              {/* LLM Conclusion */}
-              <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  "On-chain activity healthy, long-term holder accumulation signal strong."
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-2">
+                <Skeleton className="h-3 w-full" />
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-16 w-full rounded" />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="bg-slate-900/50 border-emerald-500/30 backdrop-blur-sm">
+              <CardContent className="px-3 py-3">
+                <p className="text-xs text-slate-400 text-center">No OnChainAgent data available</p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* TAAgent - Momentum Scout */}
-          <Card className="bg-slate-900/50 border-amber-500/30 backdrop-blur-sm hover:border-amber-500/50 transition-all relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            <CardHeader className="pb-2 pt-3 px-3">
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 bg-gradient-to-br from-amber-500 to-orange-600 rounded-lg flex items-center justify-center shadow-lg shadow-amber-500/50 relative">
-                  <Zap className="w-5 h-5 text-white" />
-                  <div className="absolute inset-0 bg-amber-400/30 rounded-lg animate-pulse"></div>
-                </div>
-                <div className="flex-1">
-                  <CardTitle className="text-white text-xs">Momentum Scout</CardTitle>
-                  <p className="text-slate-500 text-xs">TAAgent (20%)</p>
-                </div>
-                <div className={`text-right ${taScore > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  <div className="text-sm font-mono">{taScore > 0 ? '+' : ''}{taScore.toFixed(2)}</div>
-                  <div className="text-xs text-slate-500">Score</div>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="px-3 pb-3 space-y-2">
-              {/* Core Inputs */}
-              <div className="space-y-1.5">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400">RSI(14)</span>
-                    <span className="text-amber-400">75</span>
+          {squadData?.squad.find(a => a.agent_name === 'ta_agent') ? (
+            (() => {
+              const agent = squadData.squad.find(a => a.agent_name === 'ta_agent')!;
+              const trendStatus = agent.core_inputs.find(i => i.label === 'Trend Status');
+              return (
+                <Card className="bg-slate-900/50 border-amber-500/30 backdrop-blur-sm hover:border-amber-500/50 transition-all relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                  <CardHeader className="pb-2 pt-3 px-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-10 h-10 bg-gradient-to-br from-amber-500 to-orange-600 rounded-lg flex items-center justify-center shadow-lg shadow-amber-500/50 relative">
+                        <Zap className="w-5 h-5 text-white" />
+                        <div className="absolute inset-0 bg-amber-400/30 rounded-lg animate-pulse"></div>
+                      </div>
+                      <div className="flex-1">
+                        <CardTitle className="text-white text-xs">{agent.display_name}</CardTitle>
+                        <p className="text-slate-500 text-xs">TAAgent ({agent.weight})</p>
+                      </div>
+                      <div className={`text-right ${agent.score > 0 ? 'text-emerald-400' : agent.score < 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                        <div className="text-sm font-mono">
+                          {agent.score > 0 ? (
+                            <span className="text-emerald-400">Bullish {Math.abs(agent.score).toFixed(0)}</span>
+                          ) : agent.score < 0 ? (
+                            <span className="text-red-400">Bearish {Math.abs(agent.score).toFixed(0)}</span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500">Score</div>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-3 space-y-2">
+                    {/* Core Inputs */}
+                    <div className="space-y-1.5">
+                      {agent.core_inputs.map((input, idx) => (
+                        input.label === 'Trend Status' ? (
+                          <div key={idx} className="flex items-center justify-between">
+                            <span className="text-xs text-slate-400">{input.label}</span>
+                            <Badge className={`text-xs px-2 py-0 ${
+                              input.value.includes('Golden') || input.value.includes('Bullish') ?
+                                'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' :
+                                input.value.includes('Death') || input.value.includes('Bearish') ?
+                                'bg-red-500/20 text-red-400 border-red-500/50' :
+                                'bg-slate-500/20 text-slate-400 border-slate-500/50'
+                            }`}>
+                              {input.value}
+                            </Badge>
+                          </div>
+                        ) : (
+                          <div key={idx}>
+                            <div className="flex justify-between text-xs mb-1">
+                              <span className="text-slate-400">{input.label}</span>
+                              <span className="text-amber-400">{input.value}</span>
+                            </div>
+                            {input.progress > 0 && (
+                              <Progress value={input.progress} className="h-1.5 bg-slate-800" />
+                            )}
+                          </div>
+                        )
+                      ))}
+                    </div>
+                    
+                    {/* LLM Conclusion */}
+                    <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        "{agent.reasoning}"
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })()
+          ) : isLoading ? (
+            <Card className="bg-slate-900/50 border-amber-500/30 backdrop-blur-sm">
+              <CardHeader className="pb-2 pt-3 px-3">
+                <div className="flex items-center gap-2">
+                  <Skeleton className="w-10 h-10 rounded-lg" />
+                  <div className="flex-1 space-y-1">
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-2 w-32" />
                   </div>
-                  <Progress value={75} className="h-1.5 bg-slate-800" />
+                  <Skeleton className="h-8 w-12" />
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-400">Trend Status</span>
-                  <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/50 text-xs px-2 py-0">
-                    Golden Cross
-                  </Badge>
-                </div>
-              </div>
-              
-              {/* LLM Conclusion */}
-              <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  "Technical trend bullish, but short-term overbought risk requires caution."
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-2">
+                <Skeleton className="h-3 w-full" />
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-16 w-full rounded" />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="bg-slate-900/50 border-amber-500/30 backdrop-blur-sm">
+              <CardContent className="px-3 py-3">
+                <p className="text-xs text-slate-400 text-center">No TAAgent data available</p>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* MIDDLE: AI Commander Analysis */}
@@ -358,6 +501,34 @@ export function Exploration() {
               <CardTitle className="text-white text-sm text-center">Squad Commander</CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3 relative">
+              {isLoading ? (
+                <>
+                  {/* AI Avatar Skeleton */}
+                  <div className="flex justify-center mb-3">
+                    <Skeleton className="w-32 h-32 rounded-full" />
+                  </div>
+                  {/* Commander Name Skeleton */}
+                  <div className="text-center mb-3 space-y-1">
+                    <Skeleton className="h-4 w-32 mx-auto" />
+                    <Skeleton className="h-3 w-40 mx-auto" />
+                  </div>
+                  {/* Market Analysis Skeleton */}
+                  <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/50 mb-3">
+                    <Skeleton className="h-3 w-40 mb-2" />
+                    <div className="space-y-2">
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-5/6" />
+                      <Skeleton className="h-3 w-4/6" />
+                    </div>
+                  </div>
+                  {/* Conviction Score Skeleton */}
+                  <div className="flex items-center justify-center gap-2">
+                    <Skeleton className="h-8 w-12" />
+                    <Skeleton className="h-6 w-20" />
+                  </div>
+                </>
+              ) : (
+                <>
               {/* AI Avatar */}
               <div className="flex justify-center mb-3">
                 <div className="relative">
@@ -381,7 +552,7 @@ export function Exploration() {
 
               {/* Commander Name */}
               <div className="text-center mb-3">
-                <h3 className="text-white text-sm mb-0.5">Commander Nova</h3>
+                <h3 className="text-white text-sm mb-0.5">{commanderData?.commander_name || "Commander Nova"}</h3>
                 <p className="text-slate-400 text-xs">AI Strategy Coordinator</p>
               </div>
 
@@ -389,23 +560,39 @@ export function Exploration() {
               <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/50 mb-3">
                 <div className="text-xs text-slate-400 mb-2">Market Analysis Summary:</div>
                 <div className="text-xs text-slate-200 leading-relaxed">
-                  "Current market conditions are highly favorable. Our macro indicators show strong institutional inflows with ETF net flow at +$250M. 
-                  On-chain metrics reveal robust accumulation by long-term holders with -10K BTC leaving exchanges. 
-                  Technical momentum remains bullish despite short-term overbought signals. 
-                  <span className="text-emerald-400 font-medium"> Overall conviction: STRONG BUY.</span>"
+                      "{commanderData?.market_analysis || "No analysis data available"}"
+                  {commanderData?.conviction_score && commanderData.conviction_score > 70 && (
+                    <span className="text-emerald-400 font-medium"> Overall conviction: STRONG BUY.</span>
+                  )}
                 </div>
               </div>
 
               {/* Conviction Score Badge */}
               <div className="flex items-center justify-center gap-2">
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-emerald-400 mb-0.5">{convictionScore}</div>
+                  <div className={`text-2xl font-bold mb-0.5 ${
+                    (commanderData?.conviction_score || 0) > 70 ? 'text-emerald-400' :
+                    (commanderData?.conviction_score || 0) > 40 ? 'text-amber-400' :
+                    'text-red-400'
+                  }`}>
+                    {commanderData?.conviction_score || 0}
+                  </div>
                   <div className="text-xs text-slate-400">Conviction</div>
                 </div>
-                <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/50 text-xs px-3 py-1">
-                  🔥 Strong
+                <Badge className={`text-xs px-3 py-1 ${
+                  commanderData?.conviction_level === 'Strong' ?
+                    'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' :
+                  commanderData?.conviction_level === 'Moderate' ?
+                    'bg-amber-500/20 text-amber-400 border-amber-500/50' :
+                    'bg-red-500/20 text-red-400 border-red-500/50'
+                }`}>
+                  {commanderData?.conviction_level === 'Strong' ? '🔥 Strong' :
+                   commanderData?.conviction_level === 'Moderate' ? '⚡ Moderate' :
+                   '⚠️ Weak'}
                 </Badge>
               </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -428,56 +615,64 @@ export function Exploration() {
                     </DialogHeader>
                     <ScrollArea className="h-[60vh] pr-4">
                       <div className="space-y-2">
-                        {historicalDirectives.map((directive) => (
-                          <div
-                            key={directive.id}
-                            className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3 hover:bg-slate-800/70 transition-colors"
-                          >
-                            <div className="flex items-start justify-between mb-2">
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50 text-xs px-2 py-0">
-                                    {directive.strategy}
-                                  </Badge>
-                                  <span className="text-xs text-slate-500">{directive.timestamp}</span>
+                        {directiveHistory?.directives.length ? (
+                          directiveHistory.directives.map((directive) => (
+                            <div
+                              key={directive.id}
+                              className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3 hover:bg-slate-800/70 transition-colors"
+                            >
+                              <div className="flex items-start justify-between mb-2">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50 text-xs px-2 py-0">
+                                      {directive.strategy}
+                                    </Badge>
+                                    <span className="text-xs text-slate-500">{directive.timestamp}</span>
+                                  </div>
+                                  {directive.strategy_subtitle && (
+                                    <div className="text-xs text-slate-400 mb-1">{directive.strategy_subtitle}</div>
+                                  )}
                                 </div>
-                                <div className="text-xs text-slate-400 mb-1">{directive.strategySubtitle}</div>
-                              </div>
-                              <Badge className={`text-xs px-2 py-0 ${
-                                directive.conviction > 70 
-                                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'
-                                  : directive.conviction > 40
-                                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/50'
-                                  : 'bg-red-500/20 text-red-400 border-red-500/50'
-                              }`}>
-                                {directive.conviction}
-                              </Badge>
-                            </div>
-                            
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span className={`text-xs ${
-                                  directive.action.sentiment === 'bullish' 
-                                    ? 'text-emerald-400' 
-                                    : directive.action.sentiment === 'bearish'
-                                    ? 'text-red-400'
-                                    : 'text-slate-400'
+                                <Badge className={`text-xs px-2 py-0 ${
+                                  directive.conviction > 70 
+                                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'
+                                    : directive.conviction > 40
+                                    ? 'bg-amber-500/20 text-amber-400 border-amber-500/50'
+                                    : 'bg-red-500/20 text-red-400 border-red-500/50'
                                 }`}>
-                                  {directive.status}
-                                </span>
-                                <span className="text-slate-600">•</span>
-                                <span className="text-xs text-white">
-                                  {directive.action.type} {directive.action.amount !== '-' && <span className="text-slate-400">{directive.action.amount}</span>} {directive.action.asset}
+                                  {directive.conviction}
+                                </Badge>
+                              </div>
+                              
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-xs ${
+                                    directive.action.sentiment === 'bullish' 
+                                      ? 'text-emerald-400' 
+                                      : directive.action.sentiment === 'bearish'
+                                      ? 'text-red-400'
+                                      : 'text-slate-400'
+                                  }`}>
+                                    {directive.status}
+                                  </span>
+                                  <span className="text-slate-600">•</span>
+                                  <span className="text-xs text-white">
+                                    {directive.action.type} {directive.action.amount !== '-' && <span className="text-slate-400">{directive.action.amount}</span>} {directive.action.asset}
+                                  </span>
+                                </div>
+                                <span className={`text-xs font-mono ${
+                                  directive.result >= 0 ? 'text-emerald-400' : 'text-red-400'
+                                }`}>
+                                  {directive.result >= 0 ? '+' : ''}{directive.result.toFixed(2)}%
                                 </span>
                               </div>
-                              <span className={`text-xs font-mono ${
-                                directive.result >= 0 ? 'text-emerald-400' : 'text-red-400'
-                              }`}>
-                                {directive.result >= 0 ? '+' : ''}{directive.result.toFixed(2)}%
-                              </span>
                             </div>
+                          ))
+                        ) : (
+                          <div className="text-center text-xs text-slate-400 py-8">
+                            No history records
                           </div>
-                        ))}
+                        )}
                       </div>
                     </ScrollArea>
                   </DialogContent>
@@ -486,43 +681,78 @@ export function Exploration() {
             </CardHeader>
             <CardContent className="px-3 pb-3 space-y-2">
               {/* Strategy Info */}
-              <div className="flex items-center gap-2 mb-1">
-                <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/50 text-xs px-2 py-0.5">
-                  HODL-Wave Squad
-                </Badge>
-                <span className="text-xs text-slate-500">Macro Swing Strategy</span>
-              </div>
-
-              {/* Countdown */}
-              <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs text-slate-400">Next Update In:</span>
-                  <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/50 text-xs px-2 py-0 font-mono">
-                    {formatTime(countdown)}
-                  </Badge>
-                </div>
-                <Progress value={(countdown / 14400) * 100} className="h-1.5 bg-slate-700" />
-              </div>
-
-              {/* Current Action */}
-              <div className="bg-gradient-to-br from-emerald-500/10 to-cyan-500/10 rounded-lg p-2.5 border border-emerald-500/30">
-                <div className="text-center mb-2">
-                  <div className="text-emerald-400 text-xs mb-1 tracking-wider uppercase flex items-center justify-center gap-1.5">
-                    <TrendingUp className="w-3.5 h-3.5" />
-                    Accelerate Accumulation
+              {directiveData?.strategy_name ? (
+                <>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/50 text-xs px-2 py-0.5">
+                      {directiveData.strategy_name}
+                    </Badge>
+                    {directiveData.strategy_subtitle && (
+                      <span className="text-xs text-slate-500">{directiveData.strategy_subtitle}</span>
+                    )}
                   </div>
-                </div>
-                
-                <div className="bg-slate-900/50 rounded p-2 mb-1.5">
-                  <div className="text-center text-white text-sm">
-                    BUY <span className="text-emerald-400">0.75%</span> BTC
-                  </div>
-                </div>
 
-                <div className="text-xs text-slate-300 text-center">
-                  All agents aligned • Maximum confidence deployment
+                  {/* Countdown */}
+                  <div className="bg-slate-800/50 rounded p-2 border border-slate-700/50">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs text-slate-400">Next Update In:</span>
+                      <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/50 text-xs px-2 py-0 font-mono">
+                        {localCountdown?.formatted || directiveData.countdown.formatted}
+                      </Badge>
+                    </div>
+                    <Progress value={localCountdown?.progress ?? directiveData.countdown.progress} className="h-1.5 bg-slate-700" />
+                  </div>
+
+                  {/* Current Action */}
+                  <div className={`bg-gradient-to-br rounded-lg p-2.5 border ${
+                    directiveData.action.type === 'BUY' ?
+                      'from-emerald-500/10 to-cyan-500/10 border-emerald-500/30' :
+                    directiveData.action.type === 'SELL' ?
+                      'from-red-500/10 to-rose-500/10 border-red-500/30' :
+                      'from-slate-500/10 to-slate-500/10 border-slate-500/30'
+                  }`}>
+                    <div className="text-center mb-2">
+                      <div className={`text-xs mb-1 tracking-wider uppercase flex items-center justify-center gap-1.5 ${
+                        directiveData.action.type === 'BUY' ? 'text-emerald-400' :
+                        directiveData.action.type === 'SELL' ? 'text-red-400' :
+                        'text-slate-400'
+                      }`}>
+                        {directiveData.action.type === 'BUY' && <TrendingUp className="w-3.5 h-3.5" />}
+                        {directiveData.action.type === 'SELL' && <TrendingDown className="w-3.5 h-3.5" />}
+                        {directiveData.status}
+                      </div>
+                    </div>
+                    
+                    <div className="bg-slate-900/50 rounded p-2 mb-1.5">
+                      <div className={`text-center text-sm ${
+                        directiveData.action.type === 'BUY' ? 'text-white' :
+                        directiveData.action.type === 'SELL' ? 'text-white' :
+                        'text-slate-400'
+                      }`}>
+                        {directiveData.action.type} {directiveData.action.amount !== '0%' && (
+                          <span className={directiveData.action.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}>
+                            {directiveData.action.amount}
+                          </span>
+                        )} {directiveData.action.asset}
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-slate-300 text-center">
+                      {directiveData.description}
+                    </div>
+                  </div>
+                </>
+              ) : isLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-4 w-24 mx-auto" />
+                  <Skeleton className="h-16 w-full rounded" />
+                  <Skeleton className="h-20 w-full rounded" />
                 </div>
-              </div>
+              ) : (
+                <div className="text-center text-xs text-slate-400 py-4">
+                  No active directive
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -566,14 +796,27 @@ export function Exploration() {
             <CardContent className="px-3 pb-3">
               <ScrollArea className="h-48 bg-black/30 rounded p-2 font-mono text-xs">
                 <div className="space-y-1">
-                  {feedData.map((item, index) => (
-                    <div key={index} className="flex items-center gap-2 text-cyan-400/80 hover:text-cyan-400 transition-colors">
-                      <span className="text-slate-600">[{item.type}]</span>
-                      <span className="flex-1">{item.text}</span>
-                      {item.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
-                      {item.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
+                  {isLoading ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-5/6" />
+                      <Skeleton className="h-3 w-4/6" />
+                      <Skeleton className="h-3 w-3/4" />
                     </div>
-                  ))}
+                  ) : dataStream?.stream && dataStream.stream.length > 0 ? (
+                    dataStream.stream.map((item, index) => (
+                      <div key={index} className="flex items-center gap-2 text-cyan-400/80 hover:text-cyan-400 transition-colors">
+                        <span className="text-slate-600">[{item.type}]</span>
+                        <span className="flex-1">{item.text}</span>
+                        {item.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
+                        {item.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center text-slate-500 text-xs py-4">
+                      No data flow
+                    </div>
+                  )}
                 </div>
               </ScrollArea>
             </CardContent>

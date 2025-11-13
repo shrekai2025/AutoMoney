@@ -1,0 +1,14 @@
+api keys
+
+————
+Binance key
+
+API密钥
+PvLfdoqmX0HAiPDYOq0E9F7sRzqsJ0t8VCb5wubZZAMovaU70MP3CK9nD7CAG8Yr
+
+密钥
+9QLajKWvT7VAkR5MYIFsgdfJ2OGoomfey7qBPeqJZFXMvJMwQNvvMWumdq5V2IO1
+
+————
+FRED KEY
+882d0feaf0151dbe89c52755990bf9f2

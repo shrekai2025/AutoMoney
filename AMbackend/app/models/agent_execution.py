@@ -79,6 +79,13 @@ class AgentExecution(Base):
         comment="策略执行ID (可为NULL) - 策略系统的强关联"
     )
 
+    # 🆕 批量执行批次ID（用于关联同一批次的executions）
+    template_execution_batch_id = Column(
+        UUID(as_uuid=True),
+        index=True,
+        comment="批量执行批次ID - 用于关联同一批次的agent和strategy executions"
+    )
+
     # ⚠️ 注意: user.id 是 Integer 类型，不是 UUID
     user_id = Column(
         Integer,

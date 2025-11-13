@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, or_, desc
 
 from app.models.agent_execution import AgentExecution
 from app.schemas.agents import (
@@ -22,6 +22,8 @@ class AgentExecutionRecorder:
         'macro_agent': 'The Oracle',
         'ta_agent': 'Momentum Scout',
         'onchain_agent': 'Data Warden',
+        'regime_filter': 'Regime Filter',  # 动量策略
+        'ta_momentum': 'Momentum TA',      # 动量策略
     }
 
     @staticmethod
@@ -61,6 +63,7 @@ class AgentExecutionRecorder:
         strategy_execution_id: Optional[str] = None,
         user_id: Optional[int] = None,  # 🔧 修复: Integer 类型，与 user.id 一致
         execution_duration_ms: Optional[int] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> AgentExecution:
         """记录MacroAgent执行结果
 
@@ -74,6 +77,7 @@ class AgentExecutionRecorder:
             strategy_execution_id: 策略执行ID (策略系统专用)
             user_id: 触发用户ID
             execution_duration_ms: 执行耗时(毫秒)
+            template_execution_batch_id: 批量执行批次ID (用于关联同批次的executions)
 
         Returns:
             AgentExecution: 保存的执行记录
@@ -114,6 +118,7 @@ class AgentExecutionRecorder:
             caller_id=caller_id,
             strategy_execution_id=strategy_execution_id,
             user_id=user_id,
+            template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
         )
 
         db.add(execution)
@@ -133,6 +138,7 @@ class AgentExecutionRecorder:
         strategy_execution_id: Optional[str] = None,
         user_id: Optional[int] = None,  # 🔧 修复: Integer 类型，与 user.id 一致
         execution_duration_ms: Optional[int] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> AgentExecution:
         """记录TAAgent执行结果
 
@@ -189,6 +195,7 @@ class AgentExecutionRecorder:
             caller_id=caller_id,
             strategy_execution_id=strategy_execution_id,
             user_id=user_id,
+            template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
         )
 
         db.add(execution)
@@ -208,6 +215,7 @@ class AgentExecutionRecorder:
         strategy_execution_id: Optional[str] = None,
         user_id: Optional[int] = None,  # 🔧 修复: Integer 类型，与 user.id 一致
         execution_duration_ms: Optional[int] = None,
+        template_execution_batch_id: Optional[Any] = None,  # 🆕 批次ID
     ) -> AgentExecution:
         """记录OnChainAgent执行结果
 
@@ -262,6 +270,7 @@ class AgentExecutionRecorder:
             caller_id=caller_id,
             strategy_execution_id=strategy_execution_id,
             user_id=user_id,
+            template_execution_batch_id=template_execution_batch_id,  # 🆕 批次ID
         )
 
         db.add(execution)
@@ -274,11 +283,13 @@ class AgentExecutionRecorder:
         self,
         db: AsyncSession,
         agent_names: Optional[List[str]] = None,
+        user_id: Optional[int] = None,
     ) -> Dict[str, AgentExecution]:
         """获取最新的Agent执行结果（用于Mind Hub显示）
 
         Args:
             agent_names: Agent名称列表，默认查询所有业务Agent
+            user_id: 用户ID，如果提供则只查询该用户的执行记录
 
         Returns:
             {
@@ -293,18 +304,21 @@ class AgentExecutionRecorder:
         results = {}
 
         for agent_name in agent_names:
-            result = await db.execute(
-                select(AgentExecution)
-                .where(
+            query = select(AgentExecution).where(
                     and_(
                         AgentExecution.agent_name == agent_name,
                         AgentExecution.status == 'success'
                     )
                 )
-                .order_by(desc(AgentExecution.executed_at))
-                .limit(1)
-            )
-
+            
+            # 如果提供了user_id，添加用户过滤条件
+            # 只查询该用户的记录（策略执行时Agent记录的user_id是portfolio的user_id）
+            if user_id is not None:
+                query = query.where(AgentExecution.user_id == user_id)
+            
+            query = query.order_by(desc(AgentExecution.executed_at)).limit(1)
+            
+            result = await db.execute(query)
             execution = result.scalar_one_or_none()
             if execution:
                 results[agent_name] = execution
@@ -391,6 +405,122 @@ class AgentExecutionRecorder:
         )
 
         return result.scalars().all()
+
+    async def record_generic_agent(
+        self,
+        db: AsyncSession,
+        agent_name: str,
+        output: Dict[str, Any],
+        market_data: Dict[str, Any],
+        llm_info: Optional[Dict[str, Any]] = None,
+        caller_type: Optional[str] = None,
+        caller_id: Optional[str] = None,
+        strategy_execution_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        execution_duration_ms: Optional[int] = None,
+        template_execution_batch_id: Optional[Any] = None,
+    ) -> AgentExecution:
+        """通用Agent执行记录方法（用于新的Agent类型）
+        
+        Args:
+            db: 数据库会话
+            agent_name: Agent名称（如'regime_filter', 'ta_momentum'）
+            output: Agent输出字典
+            market_data: 市场数据快照
+            llm_info: LLM调用信息（可选）
+            caller_type: 调用方类型
+            caller_id: 调用方ID
+            strategy_execution_id: 策略执行ID
+            user_id: 触发用户ID
+            execution_duration_ms: 执行耗时(毫秒)
+            template_execution_batch_id: 批次ID
+        
+        Returns:
+            AgentExecution: 保存的执行记录
+        """
+        # 序列化数据
+        serialized_market_data = self._serialize_for_json(market_data)
+        serialized_output = self._serialize_for_json(output)
+        
+        # 获取显示名称
+        display_name = self.DISPLAY_NAMES.get(agent_name, agent_name)
+        
+        # 从output中提取标准字段（如果存在）
+        signal = serialized_output.get('signal', 'NEUTRAL')
+        if isinstance(signal, dict) and 'value' in signal:
+            signal = signal['value']
+        
+        confidence = serialized_output.get('confidence', 0.0)
+        if isinstance(confidence, (int, float)):
+            confidence = float(confidence)
+        else:
+            confidence = 0.0
+        
+        # score字段(可能不存在)
+        score = serialized_output.get('score')
+        if score is not None and isinstance(score, (int, float)):
+            score = float(score)
+        elif 'regime_score' in serialized_output:  # RegimeFilterAgent
+            score = float(serialized_output['regime_score'])
+        else:
+            score = None
+        
+        reasoning = serialized_output.get('reasoning', '')
+        
+        # LLM信息（如果提供）
+        llm_provider = None
+        llm_model = None
+        llm_prompt = None
+        llm_response = None
+        tokens_used = None
+        llm_cost = None
+        
+        if llm_info:
+            llm_provider = llm_info.get('provider')
+            llm_model = llm_info.get('model')
+            llm_prompt = llm_info.get('prompt')
+            llm_response = llm_info.get('response')
+            tokens_used = llm_info.get('tokens_used')
+            llm_cost = llm_info.get('cost')
+        
+        execution = AgentExecution(
+            agent_name=agent_name,
+            agent_display_name=display_name,
+            executed_at=datetime.utcnow(),
+            execution_duration_ms=execution_duration_ms or 0,
+            status='success',
+            
+            # 标准化输出
+            signal=signal,
+            confidence=confidence,
+            score=score,
+            reasoning=reasoning,
+            
+            # Agent专属数据（保存完整输出）
+            agent_specific_data=serialized_output,
+            market_data_snapshot=serialized_market_data,
+            
+            # LLM信息
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            llm_prompt=llm_prompt,
+            llm_response=llm_response,
+            tokens_used=tokens_used,
+            llm_cost=llm_cost,
+            
+            # 调用方关联
+            caller_type=caller_type,
+            caller_id=caller_id,
+            strategy_execution_id=strategy_execution_id,
+            user_id=user_id,
+            template_execution_batch_id=template_execution_batch_id,
+        )
+        
+        db.add(execution)
+        await db.commit()
+        await db.refresh(execution)
+        
+        return execution
 
 
 # 全局实例
