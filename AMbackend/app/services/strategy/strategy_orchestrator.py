@@ -175,12 +175,12 @@ class StrategyOrchestrator:
                     else:
                         # 默认使用旧的三Agent (向后兼容)
                         logger.warning("strategy_definition.business_agents为空,使用默认Agent")
-                        agent_outputs, agent_errors = await real_agent_executor.execute_all_agents(
-                            market_data=market_data,
-                            db=db,
-                            user_id=user_id,
-                            strategy_execution_id=strategy_execution_id,
-                        )
+                    agent_outputs, agent_errors = await real_agent_executor.execute_all_agents(
+                        market_data=market_data,
+                        db=db,
+                        user_id=user_id,
+                        strategy_execution_id=strategy_execution_id,
+                    )
                     
                     logger.info(f"✅ Agent 执行成功: {list(agent_outputs.keys())}")
                 except Exception as e:

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, func
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_db, get_current_user
+from app.core.deps import get_db, get_optional_user
 from app.models import User, AgentExecution, StrategyExecution, StrategyDefinition, Portfolio
 from app.services.agents.execution_recorder import agent_execution_recorder
 
@@ -128,15 +128,22 @@ def get_trend_status(ema_data: Dict[str, Any]) -> str:
 @router.get("/squad-decision-core")
 async def get_squad_decision_core(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取Squad Decision Core数据（三个Agent的最新执行结果）
     
     返回三个业务Agent的最新工作成果，用于Exploration页面左侧显示
     所有用户都可以看到所有数据，不进行权限过滤
+    未登录用户也可以访问此端点
     """
     try:
+        # 记录访问信息（用于调试）
+        if current_user:
+            logger.info(f"[Exploration] /squad-decision-core accessed by user: {current_user.email}")
+        else:
+            logger.info(f"[Exploration] /squad-decision-core accessed by anonymous user")
+        
         latest_executions = await agent_execution_recorder.get_latest_executions(db, user_id=None)
         
         # 调试信息：检查查询结果
@@ -361,7 +368,7 @@ async def get_squad_decision_core(
 async def get_commander_analysis(
     strategy_id: Optional[int] = Query(None, description="策略定义ID，可选"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取AI Commander的综合分析
@@ -419,7 +426,7 @@ async def get_commander_analysis(
 async def get_active_directive(
     strategy_id: Optional[int] = Query(None, description="策略定义ID，可选"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取当前活跃的指令
@@ -517,7 +524,7 @@ async def get_directive_history(
     strategy_id: Optional[int] = Query(None, description="策略定义ID，可选"),
     limit: int = Query(100, ge=1, le=200, description="返回数量限制"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取指令历史
@@ -601,7 +608,7 @@ async def get_directive_history(
 @router.get("/data-stream")
 async def get_data_stream(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取格式化的数据流数组
@@ -696,7 +703,7 @@ async def get_data_stream(
 @router.get("/available-strategies")
 async def get_available_strategies(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取所有已激活的策略列表

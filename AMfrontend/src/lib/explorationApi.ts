@@ -2,35 +2,41 @@
  * Exploration API - Mind Hub页面数据获取
  */
 
-import { getAuth } from 'firebase/auth';
-import { initializeFirebase } from './firebase';
+import { getAuthInstance, initializeFirebase } from './firebase';
 
 const API_BASE = '/api/v1/exploration';
 
 // Firebase 初始化状态
 let firebaseInitialized = false;
-let firebaseInitPromise: Promise<void> | null = null;
+let firebaseInitPromise: Promise<boolean> | null = null;
 
 /**
- * 确保 Firebase 已初始化
+ * 尝试初始化 Firebase（不抛出错误）
+ * 如果初始化失败，返回false但不阻塞
  */
-async function ensureFirebaseInitialized(): Promise<void> {
+async function tryInitializeFirebase(): Promise<boolean> {
   if (firebaseInitialized) {
-    return;
+    return true;
   }
 
   if (firebaseInitPromise) {
-    return firebaseInitPromise;
+    try {
+      await firebaseInitPromise;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   firebaseInitPromise = (async () => {
     try {
       await initializeFirebase();
       firebaseInitialized = true;
+      return true;
     } catch (error) {
-      console.error('Firebase initialization failed:', error);
+      console.warn('[ExplorationAPI] Firebase initialization failed (non-blocking):', error);
       firebaseInitPromise = null;
-      throw error;
+      return false;
     }
   })();
 
@@ -136,66 +142,48 @@ export interface AvailableStrategies {
 }
 
 async function fetchWithAuth<T>(url: string): Promise<T> {
-  try {
-    // 确保 Firebase 已初始化
-    await ensureFirebaseInitialized();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
 
-    const auth = getAuth();
-    const user = auth.currentUser;
-    
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    // 获取并添加 Firebase token
-    if (user) {
-      try {
-        const token = await user.getIdToken(false);
-        headers['Authorization'] = `Bearer ${token}`;
-      } catch (tokenError) {
-        console.error('Error getting Firebase token:', tokenError);
-        // Token 获取失败，继续请求（后端会返回401）
-      }
-    }
-
-  const response = await fetch(url, {
-      method: 'GET',
-      headers,
-    credentials: 'include',
-  });
+  // 尝试获取Firebase token（如果用户已登录）
+  // 如果Firebase未初始化或用户未登录，继续请求（不阻塞）
+  const firebaseInitialized = await tryInitializeFirebase();
   
-  if (!response.ok) {
-      // 如果是401，尝试刷新token并重试
-      if (response.status === 401 && user) {
+  if (firebaseInitialized) {
+    try {
+      const auth = await getAuthInstance();
+      const user = auth.currentUser;
+      
+      if (user) {
         try {
-          const newToken = await user.getIdToken(true); // 强制刷新
-          headers['Authorization'] = `Bearer ${newToken}`;
-          
-          const retryResponse = await fetch(url, {
-            method: 'GET',
-            headers,
-            credentials: 'include',
-          });
-          
-          if (!retryResponse.ok) {
-            throw new Error(`API error: ${retryResponse.statusText}`);
-          }
-          
-          return retryResponse.json();
-        } catch (refreshError) {
-          console.error('Failed to refresh token:', refreshError);
-          throw new Error(`API error: ${response.statusText}`);
+          const token = await user.getIdToken(false);
+          headers['Authorization'] = `Bearer ${token}`;
+        } catch (tokenError) {
+          // Token 获取失败，继续请求（未登录用户也可以访问）
+          console.warn('[ExplorationAPI] Could not get Firebase token, proceeding without auth');
         }
       }
-      
-    throw new Error(`API error: ${response.statusText}`);
+    } catch (authError) {
+      // 获取auth实例失败，继续请求
+      console.warn('[ExplorationAPI] Could not get auth instance, proceeding without auth');
+    }
   }
-  
+
+  // 无论Firebase是否初始化成功，都继续请求
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => response.statusText);
+    console.error(`[ExplorationAPI] API error: ${response.status} ${errorText}`);
+    throw new Error(`API error: ${response.status} ${errorText}`);
+  }
+
   return response.json();
-  } catch (error) {
-    console.error('Fetch error:', error);
-    throw error;
-  }
 }
 
 export const explorationApi = {

@@ -97,9 +97,14 @@ class DynamicAgentExecutor:
             raise ValueError(error_msg)
         
         # 并行执行所有Agent
+        logger.info(f"🎯 准备并行执行 {len(agent_names)} 个Agent: {agent_names}")
+        print(f"🎯 准备并行执行 {len(agent_names)} 个Agent: {agent_names}")
+
         tasks = []
         for agent_name in agent_names:
             agent = self._agent_registry[agent_name]
+            logger.info(f"📦 创建Agent任务: {agent_name}")
+            print(f"📦 创建Agent任务: {agent_name}")
             task = self._run_agent(
                 agent_name=agent_name,
                 agent=agent,
@@ -110,9 +115,13 @@ class DynamicAgentExecutor:
                 template_execution_batch_id=template_execution_batch_id,
             )
             tasks.append(task)
-        
+
+        logger.info(f"⏳ 开始并行执行所有Agent...")
+        print(f"⏳ 开始并行执行所有Agent...")
         # 执行并收集结果
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(f"✅ Agent并行执行完成,获得 {len(results)} 个结果")
+        print(f"✅ Agent并行执行完成,获得 {len(results)} 个结果")
         
         # 整理输出
         agent_outputs = {}
@@ -150,7 +159,7 @@ class DynamicAgentExecutor:
     ) -> Any:
         """
         执行单个Agent
-        
+
         Args:
             agent_name: Agent名称
             agent: Agent实例
@@ -159,49 +168,48 @@ class DynamicAgentExecutor:
             user_id: 用户ID
             strategy_execution_id: 策略执行ID
             template_execution_batch_id: 批次ID
-        
+
         Returns:
             Agent输出
         """
         start_time = time.time()
-        
+
         try:
-            logger.info(f"开始执行 {agent_name}...")
+            logger.info(f"🚀 开始执行 {agent_name}... (agent实例类型: {type(agent).__name__})")
+            print(f"🚀 开始执行 {agent_name}... (agent实例类型: {type(agent).__name__})")
             
             # 根据Agent类型调用不同的方法
             if agent_name in ["macro", "ta", "onchain"]:
-                # 旧策略Agent: 使用analyze方法（它们自己会记录执行）
+                # 旧策略Agent: 使用analyze方法（只接受market_data参数）
                 if asyncio.iscoroutinefunction(agent.analyze):
-                    output = await agent.analyze(
-                        market_data=market_data,
-                        db=db,
-                        user_id=user_id,
-                        strategy_execution_id=strategy_execution_id,
-                    )
+                    output = await agent.analyze(market_data=market_data)
                 else:
-                    output = agent.analyze(
-                        market_data=market_data,
-                        db=db,
-                        user_id=user_id,
-                        strategy_execution_id=strategy_execution_id,
-                    )
+                    output = agent.analyze(market_data=market_data)
             
             elif agent_name == "regime_filter":
                 # RegimeFilterAgent: 使用analyze方法
+                logger.info(f"💡 调用 {agent_name}.analyze(market_data=..., custom_weights=None)")
+                print(f"💡 调用 {agent_name}.analyze(market_data=..., custom_weights=None)")
                 output = await agent.analyze(
                     market_data=market_data,
-                    use_llm=False,  # 默认不使用LLM增强(加快速度)
+                    custom_weights=None,  # 使用默认权重
                 )
-            
+                logger.info(f"✅ {agent_name} 执行完成, output keys: {list(output.keys()) if isinstance(output, dict) else type(output)}")
+                print(f"✅ {agent_name} 执行完成, output keys: {list(output.keys()) if isinstance(output, dict) else type(output)}")
+
             elif agent_name == "ta_momentum":
                 # TAMomentumAgent: 使用analyze方法
+                logger.info(f"💡 调用 {agent_name}.analyze(market_data=...)")
+                print(f"💡 调用 {agent_name}.analyze(market_data=...)")
                 output = await agent.analyze(
                     market_data=market_data,
                 )
-            
+                logger.info(f"✅ {agent_name} 执行完成, output keys: {list(output.keys()) if isinstance(output, dict) else type(output)}")
+                print(f"✅ {agent_name} 执行完成, output keys: {list(output.keys()) if isinstance(output, dict) else type(output)}")
+
             else:
                 raise ValueError(f"未知的Agent类型: {agent_name}")
-            
+
             # 计算执行时长
             execution_duration_ms = int((time.time() - start_time) * 1000)
             

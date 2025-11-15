@@ -4,14 +4,38 @@
 
 import { useState, useEffect } from "react";
 import { Button } from "../ui/button";
-import { RefreshCw, CheckCircle, XCircle, Key } from "lucide-react";
+import { RefreshCw, CheckCircle, XCircle, Key, PlayCircle, AlertTriangle } from "lucide-react";
 import { fetchAllAPIs, type APIConfig } from "../../lib/registryApi";
+
+interface APITestResult {
+  api_name: string;
+  status: string;
+  duration_seconds: number;
+  data: any;
+  error: {
+    type: string;
+    message: string;
+  } | null;
+}
+
+interface APITestResponse {
+  timestamp: string;
+  summary: {
+    total: number;
+    success: number;
+    failed: number;
+    success_rate: string;
+  };
+  results: APITestResult[];
+}
 
 export function AdminAPIConfig() {
   const [apis, setApis] = useState<APIConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeOnly, setActiveOnly] = useState(true);
+  const [testResults, setTestResults] = useState<APITestResponse | null>(null);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     loadAPIs();
@@ -29,6 +53,29 @@ export function AdminAPIConfig() {
       console.error('Failed to load API configs:', err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function testAllAPIs() {
+    try {
+      setTesting(true);
+      const response = await fetch('/api/v1/api-test/test-all-apis');
+      const data = await response.json();
+      setTestResults(data);
+    } catch (err: any) {
+      console.error('Failed to test APIs:', err);
+      setTestResults({
+        timestamp: new Date().toISOString(),
+        summary: {
+          total: 0,
+          success: 0,
+          failed: 0,
+          success_rate: '0%',
+        },
+        results: [],
+      });
+    } finally {
+      setTesting(false);
     }
   }
 
@@ -77,6 +124,25 @@ export function AdminAPIConfig() {
             Active only
           </label>
           <Button
+            onClick={testAllAPIs}
+            disabled={testing}
+            variant="outline"
+            size="sm"
+            className="bg-blue-900/30 border-blue-700 hover:bg-blue-800/50 text-blue-300"
+          >
+            {testing ? (
+              <>
+                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                Testing...
+              </>
+            ) : (
+              <>
+                <PlayCircle className="w-4 h-4 mr-2" />
+                Test All APIs
+              </>
+            )}
+          </Button>
+          <Button
             onClick={loadAPIs}
             variant="outline"
             size="sm"
@@ -87,6 +153,97 @@ export function AdminAPIConfig() {
           </Button>
         </div>
       </div>
+
+      {/* Test Results */}
+      {testResults && (
+        <div className="bg-slate-900/50 rounded-xl border border-slate-800 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-xl font-bold text-white">API Test Results</h3>
+              <p className="text-sm text-slate-400 mt-1">
+                Tested at {new Date(testResults.timestamp).toLocaleString()}
+              </p>
+            </div>
+            <div className="flex items-center gap-6 bg-slate-800/50 px-6 py-3 rounded-lg">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-white">{testResults.summary.total}</div>
+                <div className="text-xs text-slate-400">Total</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-emerald-400">{testResults.summary.success}</div>
+                <div className="text-xs text-slate-400">Success</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-red-400">{testResults.summary.failed}</div>
+                <div className="text-xs text-slate-400">Failed</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-blue-400">{testResults.summary.success_rate}</div>
+                <div className="text-xs text-slate-400">Success Rate</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {testResults.results.map((result, idx) => (
+              <div
+                key={idx}
+                className={`border rounded-lg p-4 ${
+                  result.status === 'success'
+                    ? 'border-emerald-500/30 bg-emerald-500/5'
+                    : 'border-red-500/30 bg-red-500/5'
+                }`}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    {result.status === 'success' ? (
+                      <CheckCircle className="w-5 h-5 text-emerald-400" />
+                    ) : (
+                      <XCircle className="w-5 h-5 text-red-400" />
+                    )}
+                    <div>
+                      <h4 className="text-lg font-semibold text-white">{result.api_name}</h4>
+                      <div className="flex items-center gap-4 mt-1">
+                        <span className={`text-sm font-medium ${
+                          result.status === 'success' ? 'text-emerald-400' : 'text-red-400'
+                        }`}>
+                          {result.status.toUpperCase()}
+                        </span>
+                        <span className="text-sm text-slate-400">
+                          {result.duration_seconds}s
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {result.error && (
+                  <div className="mt-3 p-3 bg-red-900/20 border border-red-500/30 rounded">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5" />
+                      <div>
+                        <div className="text-sm font-medium text-red-400">{result.error.type}</div>
+                        <div className="text-sm text-red-300 mt-1">{result.error.message}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {result.data && (
+                  <details className="mt-3">
+                    <summary className="cursor-pointer text-sm text-blue-400 hover:text-blue-300">
+                      View Response Data
+                    </summary>
+                    <pre className="mt-2 p-3 bg-slate-950 rounded text-xs text-slate-300 overflow-x-auto">
+                      {JSON.stringify(result.data, null, 2)}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* API List */}
       <div className="bg-slate-900/50 rounded-xl border border-slate-800">

@@ -197,3 +197,47 @@ async def get_current_trader_or_admin(
             detail="Trader or Admin access required",
         )
     return current_user
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """
+    Get current user if authenticated, otherwise return None
+    
+    This allows endpoints to work for both authenticated and unauthenticated users.
+    
+    Args:
+        credentials: Optional HTTP Authorization credentials (Bearer token)
+        db: Database session
+    
+    Returns:
+        User object if authenticated, None otherwise
+    """
+    if not credentials:
+        return None
+    
+    token = credentials.credentials
+    
+    # Verify Firebase token
+    decoded_token = verify_firebase_token(token)
+    
+    if decoded_token is None:
+        return None
+    
+    # Get Firebase UID
+    firebase_uid: Optional[str] = decoded_token.get("uid")
+    if firebase_uid is None:
+        return None
+    
+    # Query user from database using Firebase UID
+    result = await db.execute(
+        select(User).where(User.google_id == firebase_uid)
+    )
+    user = result.scalar_one_or_none()
+    
+    if user and not user.is_active:
+        return None
+    
+    return user

@@ -6,6 +6,7 @@
  * - Agent注册表
  * - Tool注册表
  * - API配置
+ * - Agent监控
  */
 
 import { Shield } from "lucide-react";
@@ -15,6 +16,7 @@ import { AdminStrategyTemplates } from "./admin/AdminStrategyTemplates";
 import { AdminAgentRegistry } from "./admin/AdminAgentRegistry";
 import { AdminToolRegistry } from "./admin/AdminToolRegistry";
 import { AdminAPIConfig } from "./admin/AdminAPIConfig";
+import { AgentMonitor } from "./AgentMonitor";
 
 export function AdminPanel() {
   return (
@@ -26,7 +28,7 @@ export function AdminPanel() {
           <h1 className="text-3xl font-bold text-white">Admin Panel</h1>
         </div>
         <p className="text-slate-400">
-          Manage strategies, agents, tools, and API configurations
+          Manage strategies, agents, tools, API configurations, and monitor agent execution
         </p>
       </div>
 
@@ -64,6 +66,12 @@ export function AdminPanel() {
             >
               API Config
             </TabsTrigger>
+            <TabsTrigger
+              value="monitor"
+              className="data-[state=active]:bg-purple-600 data-[state=active]:text-white whitespace-nowrap px-6"
+            >
+              Agent Monitor
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -85,6 +93,10 @@ export function AdminPanel() {
 
         <TabsContent value="apis" className="space-y-4">
           <AdminAPIConfig />
+        </TabsContent>
+
+        <TabsContent value="monitor" className="space-y-4">
+          <AgentMonitor />
         </TabsContent>
       </Tabs>
     </div>

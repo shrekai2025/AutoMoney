@@ -12,7 +12,6 @@ import { fetchMarketplaceStrategies } from "../lib/marketplaceApi";
 import type { StrategyCard } from "../types/strategy";
 import { formatPoolSize } from "../utils/strategyUtils";
 import { useAuth } from "../contexts/AuthContext";
-import { LoginPlaceholder } from "./LoginPlaceholder";
 import { LaunchStrategyModal } from "./LaunchStrategyModal";
 import { toast } from "sonner";
 
@@ -62,24 +61,10 @@ export function StrategyMarketplace({ onSelectStrategy }: StrategyMarketplacePro
     }
   }, [sortBy, riskFilter]);
 
-  // 将所有 Hooks 移到条件返回之前，确保每次渲染时 Hooks 调用顺序一致
+  // 加载策略数据（无论是否登录）
   useEffect(() => {
-    // 只有在用户已认证时才加载数据
-    if (isAuthenticated) {
-      loadStrategies();
-    }
-  }, [isAuthenticated, loadStrategies]);
-
-  // Show login placeholder if not authenticated
-  if (!isAuthenticated) {
-    return (
-      <LoginPlaceholder
-        title="Strategy Marketplace"
-        description="Sign in to explore and deploy elite AI trading squads. Browse strategies, compare performance metrics, and join successful trading communities."
-        icon={Users}
-      />
-    );
-  }
+    loadStrategies();
+  }, [loadStrategies]);
 
 
   const handleCardClick = (strategy: StrategyCard) => {

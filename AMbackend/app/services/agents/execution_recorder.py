@@ -462,8 +462,11 @@ class AgentExecutionRecorder:
             score = float(score)
         elif 'regime_score' in serialized_output:  # RegimeFilterAgent
             score = float(serialized_output['regime_score'])
+        elif 'overall_momentum_strength' in serialized_output:  # TAMomentumAgent
+            # 使用overall_momentum_strength作为score（范围-100到+100）
+            score = float(serialized_output['overall_momentum_strength'])
         else:
-            score = None
+            score = 0.0  # 默认值为0而不是None，避免NOT NULL约束
         
         reasoning = serialized_output.get('reasoning', '')
         

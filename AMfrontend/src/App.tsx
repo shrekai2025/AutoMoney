@@ -5,9 +5,12 @@ import { StrategyDetails } from "./components/StrategyDetails";
 import { Exploration } from "./components/Exploration";
 import ResearchChat from "./components/ResearchChat";
 import { AdminPanel } from "./components/AdminPanel";
+import DebugLogs from "./components/DebugLogs";
+import { AgentMonitor } from "./components/AgentMonitor";
 import { GoogleAuth } from "./components/GoogleAuth";
+import { Login } from "./components/Login";
 import { Button } from "./components/ui/button";
-import { LayoutDashboard, TrendingUp, Sparkles, Activity, MessageSquare, Shield } from "lucide-react";
+import { LayoutDashboard, TrendingUp, Sparkles, Activity, MessageSquare, Shield, Bug } from "lucide-react";
 import { Toaster } from "./components/ui/sonner";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 
@@ -62,6 +65,7 @@ function Navigation() {
               <NavButton to="/strategy" icon={TrendingUp}>Strategy</NavButton>
               <NavButton to="/portfolio" icon={LayoutDashboard}>Portfolio</NavButton>
               {isAdmin && <NavButton to="/admin" icon={Shield} color="purple">Admin</NavButton>}
+              {isAdmin && <NavButton to="/debug" icon={Bug} color="purple">Debug</NavButton>}
             </div>
           </div>
 
@@ -146,6 +150,8 @@ function MobileNav() {
 // Main app content component
 function AppContent() {
   const { isLoading, error } = useAuth();
+  const location = useLocation();
+  const isLoginPage = location.pathname === '/login';
 
   // Global loading screen - wait for auth to complete
   if (isLoading) {
@@ -177,6 +183,18 @@ function AppContent() {
     console.warn('[App] Authentication error (non-blocking):', error);
   }
 
+  // Login page - no navigation
+  if (isLoginPage) {
+    return (
+      <div className="dark">
+        <Routes>
+          <Route path="/login" element={<Login />} />
+        </Routes>
+        <Toaster position="top-right" />
+      </div>
+    );
+  }
+
   return (
     <div className="dark min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
       {/* Animated background elements */}
@@ -199,6 +217,8 @@ function AppContent() {
           <Route path="/strategy/:id" element={<StrategyDetailsWrapper />} />
           <Route path="/portfolio" element={<Dashboard />} />
           <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/debug" element={<DebugLogs />} />
+          <Route path="/agent-monitor" element={<AgentMonitor />} />
         </Routes>
       </main>
 

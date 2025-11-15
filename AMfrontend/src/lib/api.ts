@@ -13,7 +13,8 @@ let firebaseInitialized = false;
 let firebaseInitPromise: Promise<void> | null = null;
 
 /**
- * 确保 Firebase 已初始化
+ * 确保 Firebase 已初始化（非阻塞）
+ * 如果初始化失败，不抛出错误，允许请求继续（用于公开端点）
  */
 async function ensureFirebaseInitialized(): Promise<void> {
   if (firebaseInitialized) {
@@ -30,9 +31,9 @@ async function ensureFirebaseInitialized(): Promise<void> {
       firebaseInitialized = true;
       console.log('✅ Firebase ready for API requests');
     } catch (error) {
-      console.error('❌ Firebase initialization failed:', error);
+      console.warn('⚠️  Firebase initialization failed (non-blocking):', error);
       firebaseInitPromise = null; // 允许重试
-      throw error;
+      // 不抛出错误，允许未认证请求继续
     }
   })();
 
@@ -52,7 +53,7 @@ const apiClient: AxiosInstance = axios.create({
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     try {
-      // 等待 Firebase 初始化完成
+      // 等待 Firebase 初始化完成（允许失败）
       await ensureFirebaseInitialized();
 
       const auth = getAuth();
@@ -76,8 +77,8 @@ apiClient.interceptors.request.use(
 
       return config;
     } catch (initError) {
-      console.error('❌ Firebase initialization error in request interceptor:', initError);
-      // Firebase 初始化失败，但仍尝试发送请求（可能是公开端点）
+      console.warn('⚠️  Firebase initialization error (continuing without auth):', initError);
+      // Firebase 初始化失败，但仍尝试发送请求（公开端点不需要认证）
       return config;
     }
   },
@@ -95,6 +96,18 @@ apiClient.interceptors.response.use(
 
     // 如果是401错误且未重试过
     if (error.response?.status === 401 && !originalRequest._retry) {
+      // 检查是否是公开端点（允许未登录访问）
+      const publicEndpoints = ['/api/v1/strategies/', '/api/v1/exploration/', '/api/v1/auth/config'];
+      const isPublicEndpoint = publicEndpoints.some(endpoint =>
+        originalRequest.url?.includes(endpoint)
+      );
+
+      // 如果是公开端点，不重定向到登录页，直接返回错误（前端会显示为未登录状态）
+      if (isPublicEndpoint) {
+        console.warn('⚠️ Public endpoint returned 401 (no auth provided), continuing without redirect');
+        return Promise.reject(error);
+      }
+
       originalRequest._retry = true;
 
       try {

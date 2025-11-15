@@ -13,6 +13,9 @@ from app.api.v1.endpoints import (
     strategy_definitions,
     strategy_instances,
     exploration,
+    system_monitoring,
+    agent_monitor,
+    api_test,
 )
 
 
@@ -77,4 +80,22 @@ api_router.include_router(
     exploration.router,
     prefix="/exploration",
     tags=["exploration"],
+)
+
+api_router.include_router(
+    system_monitoring.router,
+    prefix="/monitoring",
+    tags=["system-monitoring"],
+)
+
+api_router.include_router(
+    agent_monitor.router,
+    prefix="/agent-monitor",
+    tags=["agent-monitor"],
+)
+
+api_router.include_router(
+    api_test.router,
+    prefix="/api-test",
+    tags=["api-test"],
 )

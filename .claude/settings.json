@@ -1,6 +1,6 @@
 {
     "env": {
-      "ANTHROPIC_API_KEY": "sk-qJslangDYpKNy4h8eIzW7QFymi6YQyJd9on1w58LwHe8WxPJ",
-      "ANTHROPIC_BASE_URL": "https://api.tu-zi.com"
+      "ANTHROPIC_API_KEY": "sk-ant-oat01-6db72faae7a2f601151895cf4064c9ef0982ebc5561a444841daafe2022b214a",
+      "ANTHROPIC_BASE_URL": "https://gaccode.com/claudecode"
     }
 }

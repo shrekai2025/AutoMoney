@@ -22,6 +22,10 @@ from app.services.strategy.scheduler import strategy_scheduler
 from app.services.agents.agent_manager import agent_manager
 from app.services.tools.tool_manager import tool_manager
 from app.services.apis.api_manager import api_manager
+from app.services.monitoring.error_tracker import error_tracker
+import os
+import re
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -602,3 +606,205 @@ async def update_api_config(
     except Exception as e:
         logger.error(f"更新API配置失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update API config: {str(e)}")
+
+
+# ============ Debug日志监控 ============
+
+class LogEntry(BaseModel):
+    """日志条目"""
+    timestamp: str
+    level: str  # INFO, WARNING, ERROR, CRITICAL
+    component: Optional[str] = None
+    message: str
+    raw_line: str
+
+
+class LogCategory(BaseModel):
+    """日志分类"""
+    category: str  # 'errors', 'warnings', 'info', 'system_errors'
+    count: int
+    entries: List[LogEntry]
+
+
+class DebugLogsResponse(BaseModel):
+    """Debug日志响应"""
+    log_file_path: str
+    total_lines: int
+    categories: List[LogCategory]
+    system_errors: List[Dict[str, Any]]  # 从数据库获取的系统错误
+
+
+@router.get("/debug/logs", response_model=DebugLogsResponse)
+async def get_debug_logs(
+    lines: int = 1000,  # 读取最近N行
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """
+    获取系统日志（仅Admin）
+    
+    从日志文件和数据库读取所有类型的日志信息，分类展示
+    """
+    try:
+        # 1. 读取日志文件
+        # 尝试多个可能的日志文件位置
+        possible_paths = [
+            Path(".pids/backend.log"),
+            Path("../.pids/backend.log"),
+            Path("/Users/uniteyoo/Documents/AutoMoney/.pids/backend.log"),
+            Path(__file__).parent.parent.parent.parent / ".pids" / "backend.log",  # 从当前文件位置推断
+        ]
+        
+        log_file_path = None
+        for path in possible_paths:
+            if path.exists():
+                log_file_path = path
+                break
+        
+        if not log_file_path:
+            # 如果都找不到，使用第一个作为默认路径
+            log_file_path = possible_paths[0]
+        
+        log_entries = []
+        if log_file_path.exists():
+            try:
+                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    all_lines = f.readlines()
+                    # 只读取最后N行
+                    recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+                    
+                    for line in recent_lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        
+                        # 解析日志行
+                        entry = _parse_log_line(line)
+                        if entry:
+                            log_entries.append(entry)
+            except Exception as e:
+                logger.error(f"读取日志文件失败: {e}")
+                log_entries = []
+        else:
+            logger.warning(f"日志文件不存在: {log_file_path}")
+        
+        # 2. 分类日志
+        errors = [e for e in log_entries if e.level in ['ERROR', 'CRITICAL']]
+        warnings = [e for e in log_entries if e.level == 'WARNING']
+        info = [e for e in log_entries if e.level == 'INFO']
+        
+        categories = [
+            LogCategory(category='errors', count=len(errors), entries=errors[-100:]),
+            LogCategory(category='warnings', count=len(warnings), entries=warnings[-100:]),
+            LogCategory(category='info', count=len(info), entries=info[-100:]),
+        ]
+        
+        # 3. 从数据库获取系统错误记录
+        system_errors_list = await error_tracker.get_recent_errors(
+            db=db,
+            limit=50,
+            unresolved_only=True,
+        )
+        
+        system_errors = [
+            {
+                "id": error.id,
+                "error_type": error.error_type,
+                "error_category": error.error_category,
+                "severity": error.severity,
+                "component": error.component,
+                "error_message": error.error_message,
+                "error_details": error.error_details[:2000] if error.error_details else None,  # 截断长错误
+                "context": error.context,
+                "occurrence_count": error.occurrence_count,
+                "first_occurred_at": error.first_occurred_at.isoformat(),
+                "last_occurred_at": error.last_occurred_at.isoformat(),
+                "is_resolved": error.is_resolved,
+                "strategy_name": error.strategy_name,
+                "portfolio_id": error.portfolio_id,
+            }
+            for error in system_errors_list
+        ]
+        
+        return DebugLogsResponse(
+            log_file_path=str(log_file_path),
+            total_lines=len(log_entries),
+            categories=categories,
+            system_errors=system_errors,
+        )
+        
+    except Exception as e:
+        logger.error(f"获取Debug日志失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get debug logs: {str(e)}")
+
+
+def _parse_log_line(line: str) -> Optional[LogEntry]:
+    """解析日志行"""
+    try:
+        # 匹配Python日志格式: LEVEL:     message
+        # 或: INFO:     Started server process [12345]
+        # 或: 2025-11-13 22:25:01,204 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+        
+        # 尝试匹配标准日志格式
+        timestamp_pattern = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})'
+        level_pattern = r'\b(INFO|WARNING|ERROR|CRITICAL|DEBUG)\b'
+        
+        timestamp_match = re.search(timestamp_pattern, line)
+        level_match = re.search(level_pattern, line)
+        
+        if level_match:
+            level = level_match.group(1)
+            timestamp = timestamp_match.group(1) if timestamp_match else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 提取组件名称（如果有）
+            component = None
+            if 'sqlalchemy' in line.lower():
+                component = 'SQLAlchemy'
+            elif 'uvicorn' in line.lower():
+                component = 'Uvicorn'
+            elif 'scheduler' in line.lower():
+                component = 'Scheduler'
+            elif 'agent' in line.lower():
+                component = 'Agent'
+            elif 'strategy' in line.lower():
+                component = 'Strategy'
+            elif 'data_collector' in line.lower() or 'collector' in line.lower():
+                component = 'DataCollector'
+            
+            # 提取消息（移除时间戳和级别）
+            message = line
+            if timestamp_match:
+                message = message.replace(timestamp_match.group(0), '').strip()
+            if level_match:
+                message = message.replace(level_match.group(0), '').strip()
+            message = re.sub(r'^\s+', '', message)  # 移除前导空格
+            
+            return LogEntry(
+                timestamp=timestamp,
+                level=level,
+                component=component,
+                message=message[:500],  # 限制长度
+                raw_line=line[:1000],  # 保留原始行
+            )
+        
+        # 如果没有匹配到标准格式，尝试其他格式
+        if 'ERROR' in line or 'CRITICAL' in line:
+            return LogEntry(
+                timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                level='ERROR',
+                message=line[:500],
+                raw_line=line[:1000],
+            )
+        elif 'WARNING' in line:
+            return LogEntry(
+                timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                level='WARNING',
+                message=line[:500],
+                raw_line=line[:1000],
+            )
+        
+        return None
+        
+    except Exception as e:
+        logger.debug(f"解析日志行失败: {e}, line: {line[:100]}")
+        return None

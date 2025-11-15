@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Optional
 from decimal import Decimal
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -43,11 +43,59 @@ class StrategyScheduler:
         self.engine = None
         self.SessionLocal = None
 
+    def _run_async_job(self, coro_func, *args, **kwargs):
+        """在新事件循环中运行异步函数(用于BackgroundScheduler)
+
+        CRITICAL: 为新事件循环创建新的数据库会话工厂,避免AsyncPG连接绑定到旧事件循环
+        """
+        logger.info(f"[Scheduler] _run_async_job called: {coro_func.__name__}")
+        try:
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                # 🔧 为新事件循环创建新的数据库引擎和会话工厂
+                # AsyncPG连接必须在创建它们的事件循环中使用
+                from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+                from app.core.config import settings
+
+                temp_engine = create_async_engine(
+                    settings.DATABASE_URL,
+                    echo=False,
+                    pool_pre_ping=True,
+                )
+
+                temp_session_factory = async_sessionmaker(
+                    temp_engine,
+                    expire_on_commit=False,
+                    autocommit=False,
+                    autoflush=False,
+                )
+
+                # 临时替换SessionLocal,让调度任务使用新的会话工厂
+                original_session_local = self.SessionLocal
+                self.SessionLocal = temp_session_factory
+
+                try:
+                    result = loop.run_until_complete(coro_func(*args, **kwargs))
+                    logger.info(f"[Scheduler] _run_async_job completed: {coro_func.__name__}")
+                    return result
+                finally:
+                    # 恢复原始SessionLocal
+                    self.SessionLocal = original_session_local
+                    # 关闭临时引擎
+                    loop.run_until_complete(temp_engine.dispose())
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"[Scheduler] _run_async_job error in {coro_func.__name__}: {e}", exc_info=True)
+            raise
+
     async def initialize(self):
         """初始化数据库连接和调度器"""
-        # 创建调度器（在事件循环中）
+        # 创建调度器（使用后台线程）
         if self.scheduler is None:
-            self.scheduler = AsyncIOScheduler(timezone="UTC")
+            self.scheduler = BackgroundScheduler(timezone="UTC")
 
         # 初始化数据库连接
         self.engine = create_async_engine(
@@ -67,17 +115,30 @@ class StrategyScheduler:
 
     async def start(self):
         """启动调度器"""
+        logger.info("[Scheduler] 开始启动调度器...")
         await self.initialize()
+        logger.info("[Scheduler] 调度器初始化完成")
 
         # 添加全局定时任务
+        logger.info("[Scheduler] 添加全局定时任务...")
         self._add_global_jobs()
 
         # 为所有活跃策略添加独立任务
+        logger.info("[Scheduler] 添加策略定时任务...")
         await self._add_all_portfolio_jobs()
 
         # 启动调度器
+        logger.info("[Scheduler] 启动调度器线程...")
         self.scheduler.start()
-        logger.info("策略调度器已启动")
+        logger.info("[Scheduler] ✓ 策略调度器已启动(BackgroundScheduler)")
+
+        # 打印所有已注册的任务及其下次执行时间
+        jobs = self.scheduler.get_jobs()
+        logger.info(f"[Scheduler] 已注册 {len(jobs)} 个任务:")
+        for job in jobs:
+            logger.info(f"[Scheduler]   - {job.id}: {job.name}")
+            logger.info(f"[Scheduler]     下次执行: {job.next_run_time}")
+            logger.info(f"[Scheduler]     触发器: {job.trigger}")
 
     def stop(self):
         """停止调度器"""
@@ -89,7 +150,7 @@ class StrategyScheduler:
 
         # Job 1: 市场数据采集 (每30秒)
         self.scheduler.add_job(
-            self.collect_market_data_job,
+            lambda: self._run_async_job(self.collect_market_data_job),
             trigger=IntervalTrigger(seconds=30),
             id="market_data_collection",
             name="市场数据采集",
@@ -99,7 +160,7 @@ class StrategyScheduler:
 
         # Job 3: 组合快照 (每10分钟)
         self.scheduler.add_job(
-            self.create_portfolio_snapshots_job,
+            lambda: self._run_async_job(self.create_portfolio_snapshots_job),
             trigger=IntervalTrigger(minutes=10),
             id="portfolio_snapshots",
             name="组合快照",
@@ -158,17 +219,18 @@ class StrategyScheduler:
                     # 从模板获取执行周期
                     period_minutes = definition.default_params.get("rebalance_period_minutes", 10)
 
-                    # 创建定时任务
+                    # 创建定时任务(使用包装器运行异步函数)
                     job_id = f"strategy_template_{definition_id}"
+                    logger.info(f"[Scheduler] 正在添加任务: {job_id}, 周期={period_minutes}分钟")
                     self.scheduler.add_job(
-                        self.batch_execute_by_template,
+                        lambda def_id=definition_id: self._run_async_job(self.batch_execute_by_template, def_id),
                         trigger=IntervalTrigger(minutes=period_minutes),
                         id=job_id,
                         name=f"策略模板执行: {definition.display_name}",
-                        args=[definition_id],
                         replace_existing=True,
                         max_instances=1,
                     )
+                    logger.info(f"[Scheduler] 任务已添加: {job_id}")
 
                     logger.info(
                         f"✓ 添加模板任务: {definition.display_name} "
@@ -345,6 +407,7 @@ class StrategyScheduler:
         - 同一模板的所有实例共享Agent分析结果
         - LLM调用次数: 1次/周期（无论有多少实例）
         """
+        logger.info(f"[Scheduler] Executing strategy template {definition_id}")
         try:
             async with self.SessionLocal() as db:
                 # 1. 获取指定模板的所有活跃Portfolio
@@ -383,22 +446,43 @@ class StrategyScheduler:
                 batch_id = uuid.uuid4()
                 logger.info(f"批次ID: {batch_id}")
 
-                # 3. 采集市场数据
+            # 3. 采集市场数据(with错误追踪)
+            try:
                 market_data = await self._fetch_market_data()
+            except Exception as e:
+                logger.error(f"市场数据采集失败: {e}")
+                # 记录错误到数据库
+                from app.services.monitoring.error_tracker import error_tracker
+                await error_tracker.track_exception(
+                    db=db,
+                    exception=e,
+                    error_type="data_collection",
+                    component="Scheduler._fetch_market_data",
+                    severity="critical",
+                    context={
+                        "definition_id": definition_id,
+                        "definition_name": definition.name,
+                        "portfolio_count": len(portfolios),
+                    }
+                )
+                # 继续抛出异常,让上层处理
+                raise
 
-                # 4. 根据策略定义动态执行Agent分析（所有实例共享）
-                logger.info(f"执行Agent分析（{len(portfolios)} 个实例共享）")
+            # 4. 根据策略定义动态执行Agent分析（所有实例共享）
+            logger.info(f"执行Agent分析（{len(portfolios)} 个实例共享）")
 
-                # 🆕 根据策略定义选择Agent执行器
+            # 🆕 根据策略定义选择Agent执行器
+            # 🔧 创建新的数据库会话用于Agent执行（避免事件循环冲突）
+            async with self.SessionLocal() as agent_db:
                 if definition.business_agents:
                     # 使用动态Agent执行器(新策略)
                     from app.services.strategy.dynamic_agent_executor import dynamic_agent_executor
-                    
+
                     logger.info(f"使用动态Agent执行器: {definition.business_agents}")
                     agent_outputs, agent_errors = await dynamic_agent_executor.execute_agents(
                         agent_names=definition.business_agents,  # ✅ 从策略定义读取
                         market_data=market_data,
-                        db=db,
+                        db=agent_db,  # ✅ 使用新的数据库会话
                         user_id=portfolios[0].user_id,
                         strategy_execution_id=None,
                         template_execution_batch_id=batch_id,
@@ -408,21 +492,22 @@ class StrategyScheduler:
                     # 使用默认Agent执行器(旧策略,向后兼容)
                     from app.services.strategy.real_agent_executor import RealAgentExecutor
                     agent_executor = RealAgentExecutor()
-                    
+
                     logger.info("使用默认Agent执行器(旧策略)")
                     agent_outputs, agent_errors = await agent_executor.execute_all_agents(
                         market_data=market_data,
-                        db=db,
+                        db=agent_db,  # ✅ 使用新的数据库会话
                         user_id=portfolios[0].user_id,
                         strategy_execution_id=None,
                         template_execution_batch_id=batch_id,
                     )
                     logger.info(f"✅ 默认Agent执行完成")
 
-                # 4. 为每个Portfolio执行决策和交易
-                success_count = 0
-                failure_count = 0
+            # 5. 为每个Portfolio执行决策和交易
+            success_count = 0
+            failure_count = 0
 
+            async with self.SessionLocal() as db:
                 for portfolio in portfolios:
                     try:
                         logger.info(
@@ -455,6 +540,24 @@ class StrategyScheduler:
                             f"❌ 实例执行失败: {portfolio.instance_name} - {e}",
                             exc_info=True
                         )
+
+                        # 记录错误
+                        from app.services.monitoring.error_tracker import error_tracker
+                        await error_tracker.track_exception(
+                            db=db,
+                            exception=e,
+                            error_type="strategy_execution",
+                            component="Scheduler.batch_execute_by_template",
+                            severity="error",
+                            context={
+                                "portfolio_id": str(portfolio.id),
+                                "portfolio_name": portfolio.instance_name,
+                                "strategy_name": definition.name,
+                            },
+                            user_id=portfolio.user_id,
+                            portfolio_id=str(portfolio.id),
+                            strategy_name=definition.name,
+                        )
                         # ⚠️ 重要：不要rollback！
                         # strategy_orchestrator的异常处理已经更新了execution状态并commit了
                         # 如果这里rollback，会回滚execution的状态更新，导致记录卡在RUNNING状态
@@ -462,14 +565,14 @@ class StrategyScheduler:
                         await db.refresh(portfolio) if portfolio else None
                         # 继续下一个实例
 
-                logger.info(
-                    f"\n{'='*60}\n"
-                    f"模板 {definition.display_name} 执行完成:\n"
-                    f"  - 成功: {success_count}\n"
-                    f"  - 失败: {failure_count}\n"
-                    f"  - Agent调用: 1次（节省 {len(portfolios) - 1} 次）\n"
-                    f"{'='*60}"
-                )
+            logger.info(
+                f"\n{'='*60}\n"
+                f"模板 {definition.display_name} 执行完成:\n"
+                f"  - 成功: {success_count}\n"
+                f"  - 失败: {failure_count}\n"
+                f"  - Agent调用: 1次（节省 {len(portfolios) - 1} 次）\n"
+                f"{'='*60}"
+            )
 
         except Exception as e:
             logger.error(f"模板 {definition_id} 批量执行失败: {e}", exc_info=True)
@@ -676,29 +779,156 @@ class StrategyScheduler:
 
     async def _fetch_market_data(self) -> dict:
         """
-        采集真实市场数据
+        采集真实市场数据并转换为Agent期望的格式
 
         使用真实的市场数据 API（CoinGecko, Binance, Alternative.me, FRED）
+
+        返回格式:
+        {
+            "assets": {
+                "BTC": {
+                    "current_price": 43250.0,
+                    "price_change_24h": 3.5,
+                    "ohlcv_15m": [...],
+                    "ohlcv_60m": [...],
+                    "funding_rate": 0.0001,
+                    "open_interest_change_24h": 5.2,
+                    "futures_premium": 0.5,
+                    ...
+                },
+                "ETH": {...},
+                "SOL": {...}
+            },
+            "macro": {
+                "dxy": 103.5,
+                "fed_rate": 3.87,
+                ...
+            },
+            "sentiment": {
+                "fear_greed_value": 65,
+                ...
+            },
+            "onchain": {
+                "btc_mvrv_zscore": 2.5
+            }
+        }
         """
         try:
-            # 使用真实市场数据服务
-            market_snapshot = (
-                await real_market_data_service.get_complete_market_snapshot()
-            )
+            logger.info("📊 开始采集市场数据...")
 
-            # 添加技术指标
-            # 收集 OHLCV 数据用于技术指标计算
+            # 1. 获取原始市场数据
+            raw_snapshot = await real_market_data_service.get_complete_market_snapshot()
+            logger.info(f"✅ 原始数据采集成功: BTC ${raw_snapshot['btc_price']:.2f}")
+
+            # 2. 收集 OHLCV 数据
             all_data = await data_manager.collect_all()
+            logger.info("✅ OHLCV数据采集完成")
+
+            # 3. 转换为Agent期望的格式
+            logger.info("🔄 开始转换数据格式...")
+
+            # 3.1 构建 assets 结构
+            assets = {}
+
+            # BTC 数据
+            btc_asset = {
+                "current_price": float(raw_snapshot["btc_price"]),
+                "price_change_24h": raw_snapshot["btc_price_change_24h"],
+                "volume_24h": raw_snapshot.get("btc_volume_24h", 0),
+            }
+
+            # 添加 OHLCV K线数据
             if hasattr(all_data, "btc_ohlcv") and all_data.btc_ohlcv:
-                indicators = IndicatorCalculator.calculate_all(all_data.btc_ohlcv)
-                market_snapshot["indicators"] = indicators
+                # 15分钟K线 (最近100根)
+                btc_asset["ohlcv_15m"] = all_data.btc_ohlcv[-100:] if len(all_data.btc_ohlcv) > 100 else all_data.btc_ohlcv
+                # 60分钟K线 (从15分钟聚合,取每4根)
+                btc_asset["ohlcv_60m"] = all_data.btc_ohlcv[-400::4] if len(all_data.btc_ohlcv) > 400 else all_data.btc_ohlcv[::4]
+                logger.info(f"  ✅ BTC K线数据: 15m={len(btc_asset['ohlcv_15m'])}根, 60m={len(btc_asset['ohlcv_60m'])}根")
+            else:
+                logger.warning("  ⚠️  BTC OHLCV数据缺失,使用空数组")
+                btc_asset["ohlcv_15m"] = []
+                btc_asset["ohlcv_60m"] = []
 
-            logger.info(f"市场数据采集成功: BTC ${market_snapshot['btc_price']:.2f}")
+            # 添加衍生品数据 (TODO: 从真实API获取,暂时使用合理的模拟值)
+            btc_asset["funding_rate"] = 0.0001  # 0.01% - 典型的正常资金费率
+            btc_asset["open_interest_change_24h"] = 2.5  # 2.5% - 温和增长
+            btc_asset["futures_premium"] = 0.3  # 0.3% - 健康的期货溢价
+            logger.info(f"  📈 BTC衍生品数据(Mock): funding={btc_asset['funding_rate']:.4f}, OI_change={btc_asset['open_interest_change_24h']:.1f}%")
 
-            return market_snapshot
+            assets["BTC"] = btc_asset
+
+            # ETH 数据
+            if raw_snapshot.get("eth_price"):
+                eth_asset = {
+                    "current_price": float(raw_snapshot["eth_price"]),
+                    "price_change_24h": raw_snapshot.get("eth_price_change_24h", 0),
+                    "volume_24h": 0,
+                    "ohlcv_15m": [],  # TODO: 添加ETH K线
+                    "ohlcv_60m": [],
+                    "funding_rate": 0.0001,
+                    "open_interest_change_24h": 2.0,
+                    "futures_premium": 0.25,
+                }
+                assets["ETH"] = eth_asset
+                logger.info(f"  ✅ ETH数据: ${eth_asset['current_price']:.2f}")
+            else:
+                logger.warning("  ⚠️  ETH数据缺失")
+
+            # SOL 数据 (TODO: 添加SOL数据采集)
+            assets["SOL"] = {
+                "current_price": 100.0,  # Mock
+                "price_change_24h": 1.5,
+                "volume_24h": 0,
+                "ohlcv_15m": [],
+                "ohlcv_60m": [],
+                "funding_rate": 0.00015,
+                "open_interest_change_24h": 3.0,
+                "futures_premium": 0.4,
+            }
+            logger.info("  ⚠️  SOL数据使用Mock值")
+
+            # 3.2 构建 macro 结构 (重命名字段以匹配agent期望)
+            macro = {
+                "dxy": raw_snapshot["macro"].get("dxy_index", 103.0),
+                "fed_rate": raw_snapshot["macro"].get("fed_funds_rate", 5.5),
+                "m2_growth": raw_snapshot["macro"].get("m2_growth", 2.5),
+                "treasury_10y": raw_snapshot["macro"].get("treasury_10y", 4.5),
+                "vix": raw_snapshot["macro"].get("vix", 15.0),
+            }
+            logger.info(f"  📊 宏观数据: DXY={macro['dxy']:.1f}, Fed={macro['fed_rate']:.2f}%")
+
+            # 3.3 构建 sentiment 结构 (重命名字段)
+            sentiment = {
+                "fear_greed_value": raw_snapshot["fear_greed"].get("value", 50),
+                "fear_greed_classification": raw_snapshot["fear_greed"].get("classification", "Neutral"),
+            }
+            logger.info(f"  😰 情绪指标: Fear&Greed={sentiment['fear_greed_value']}")
+
+            # 3.4 构建 onchain 结构 (TODO: 添加真实链上数据)
+            onchain = {
+                "btc_mvrv_zscore": 1.8,  # Mock - MVRV Z-Score (1-3为健康区间)
+            }
+            logger.info(f"  ⛓️  链上数据(Mock): MVRV={onchain['btc_mvrv_zscore']:.1f}")
+
+            # 4. 组装最终数据结构
+            market_data = {
+                "assets": assets,
+                "macro": macro,
+                "sentiment": sentiment,
+                "onchain": onchain,
+                "timestamp": raw_snapshot.get("timestamp"),
+                "last_updated": raw_snapshot.get("last_updated"),
+            }
+
+            logger.info(f"✅ 市场数据格式转换完成 - 包含 {len(assets)} 个资产")
+            logger.info(f"   - BTC: ${assets['BTC']['current_price']:.2f} ({assets['BTC']['price_change_24h']:+.2f}%)")
+            logger.info(f"   - Fear&Greed: {sentiment['fear_greed_value']}")
+            logger.info(f"   - DXY: {macro['dxy']:.1f}, Fed Rate: {macro['fed_rate']:.2f}%")
+
+            return market_data
 
         except Exception as e:
-            logger.error(f"市场数据采集失败: {e}", exc_info=True)
+            logger.error(f"❌ 市场数据采集失败: {e}", exc_info=True)
             raise  # 失败时抛出异常，不再返回模拟数据
 
 

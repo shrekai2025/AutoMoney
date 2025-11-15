@@ -45,9 +45,21 @@ class DataCollectionManager:
         Raises:
             Exception: If critical data collection fails
         """
-        # Collect price data (critical)
-        price_data = await self.binance.collect()
-        btc_ohlcv = await self.binance.get_ohlcv(symbol="BTCUSDT", interval="1h", limit=168)  # 7 days
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Collect price data (critical) - with error handling
+        try:
+            price_data = await self.binance.collect()
+            btc_ohlcv = await self.binance.get_ohlcv(symbol="BTCUSDT", interval="1h", limit=168)  # 7 days
+        except Exception as e:
+            logger.error(f"❌ Binance数据采集失败: {e}")
+            # 使用mock数据作为降级方案
+            from app.services.data_collectors.mock_data import generate_mock_binance_data
+            mock_data = generate_mock_binance_data()
+            price_data = mock_data["price_data"]
+            btc_ohlcv = mock_data["ohlcv"]
+            logger.warning("⚠️ 使用Mock数据替代Binance实时数据")
 
         # Collect on-chain data (optional - requires paid Glassnode subscription)
         onchain_data = None

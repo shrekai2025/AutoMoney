@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.strategy.scheduler import strategy_scheduler
         await strategy_scheduler.start()
-        print("✓ Strategy scheduler started successfully")
+        print("✓ Strategy scheduler started successfully (BackgroundScheduler)")
     except Exception as e:
         print(f"⚠ Warning: Strategy scheduler initialization failed: {e}")
         print("  App will continue but automated trading will not work")

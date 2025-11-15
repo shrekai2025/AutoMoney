@@ -27,20 +27,44 @@ export function Exploration() {
   const [pollError, setPollError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   
+  // 加载策略列表（不依赖selectedStrategyId）
+  const loadStrategies = useCallback(async () => {
+    try {
+      const strategies = await explorationApi.getAvailableStrategies();
+      setAvailableStrategies(strategies);
+      
+      // 如果还没有选择策略，默认选择第一个
+      if (strategies.strategies.length > 0) {
+        setSelectedStrategyId((prev) => prev || strategies.strategies[0].id);
+      }
+    } catch (error) {
+      console.error('Failed to load strategies:', error);
+    }
+  }, []);
+  
+  // 首次加载策略列表
+  useEffect(() => {
+    loadStrategies();
+  }, [loadStrategies]);
+
   // 30秒轮询刷新函数
   const pollData = useCallback(async () => {
+    // 如果没有选择策略，不发送请求
+    if (!selectedStrategyId) {
+      return;
+    }
+    
     try {
       setPollError(null);
       const startTime = new Date();
       
-      // 并行获取所有数据
-      const [squad, commander, directive, history, stream, strategies] = await Promise.all([
+      // 并行获取所有数据（不包括策略列表，策略列表单独加载）
+      const [squad, commander, directive, history, stream] = await Promise.all([
         explorationApi.getSquadDecisionCore(),
         explorationApi.getCommanderAnalysis(selectedStrategyId),
         explorationApi.getActiveDirective(selectedStrategyId),
         explorationApi.getDirectiveHistory(selectedStrategyId, 100),
         explorationApi.getDataStream(),
-        explorationApi.getAvailableStrategies(),
       ]);
       
       setSquadData(squad);
@@ -48,7 +72,6 @@ export function Exploration() {
       setDirectiveData(directive);
       setDirectiveHistory(history);
       setDataStream(stream);
-      setAvailableStrategies(strategies);
       
       setLastPollTime(startTime);
       setIsLive(true); // 轮询成功，显示LIVE状态
@@ -63,6 +86,11 @@ export function Exploration() {
 
   // 初始加载和30秒轮询
   useEffect(() => {
+    // 只有在选择了策略后才开始轮询
+    if (!selectedStrategyId) {
+      return;
+    }
+    
     // 立即执行一次
     pollData();
     
@@ -72,7 +100,7 @@ export function Exploration() {
     }, 30000); // 30秒
 
     return () => clearInterval(interval);
-  }, [pollData]);
+  }, [pollData, selectedStrategyId]);
 
   // 本地倒计时状态（每秒更新）
   const [localCountdown, setLocalCountdown] = useState<{ formatted: string; progress: number } | null>(null);
@@ -135,38 +163,33 @@ export function Exploration() {
           </h1>
           <div className="flex items-center gap-2">
             <span className="text-slate-400 text-xs">Currently focused on:</span>
-            <Select 
-              value={selectedStrategyId?.toString() || "all"} 
-              onValueChange={(value) => {
-                if (value === "all") {
-                  setSelectedStrategyId(undefined);
-                } else {
+            {availableStrategies && availableStrategies.strategies.length > 0 ? (
+              <Select 
+                value={selectedStrategyId?.toString() || availableStrategies.strategies[0].id.toString()} 
+                onValueChange={(value) => {
                   setSelectedStrategyId(parseInt(value));
-                }
-              }}
-            >
-              <SelectTrigger className="w-[180px] h-6 text-xs bg-slate-800/50 border-slate-700 text-white">
-                <SelectValue placeholder="All Strategies" />
-              </SelectTrigger>
-              <SelectContent className="bg-slate-800 border-slate-700">
-                <SelectItem value="all" className="text-xs text-white">
-                  <div className="flex items-center gap-2">
-                    <span>All Strategies</span>
-                  </div>
-                </SelectItem>
-                {availableStrategies?.strategies.map((strategy) => (
-                  <SelectItem 
-                    key={strategy.id} 
-                    value={strategy.id.toString()} 
-                    className="text-xs text-white"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span>{strategy.display_name}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                }}
+              >
+                <SelectTrigger className="w-[180px] h-6 text-xs bg-slate-800/50 border-slate-700 text-white">
+                  <SelectValue placeholder="Select a strategy" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  {availableStrategies.strategies.map((strategy) => (
+                    <SelectItem 
+                      key={strategy.id} 
+                      value={strategy.id.toString()} 
+                      className="text-xs text-white"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>{strategy.display_name}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span className="text-slate-500 text-xs">No strategies available</span>
+            )}
           </div>
         </div>
         <div className="relative">

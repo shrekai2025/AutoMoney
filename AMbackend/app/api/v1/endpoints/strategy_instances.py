@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.core.deps import get_db, get_current_user, get_current_trader_or_admin
+from app.core.deps import get_db, get_current_user, get_current_trader_or_admin, get_optional_user
 from app.models.user import User
 from app.services.strategy.definition_service import definition_service
 from app.services.strategy.instance_service import instance_service
@@ -84,12 +84,13 @@ async def get_strategy_instances(
     sort_by: str = Query("return", description="Sort by: return, risk, tvl, sharpe"),
     user_id: Optional[int] = Query(None, description="Filter by user ID (optional)"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     获取策略市场列表（兼容旧接口）
 
     返回 marketplace 格式的数据，与前端期望的格式一致
+    未登录用户也可以访问，可以看到所有策略数据
 
     参数：
     - **risk_level**: 可选，筛选风险等级 (low, medium, medium-high, high)
@@ -105,7 +106,7 @@ async def get_strategy_instances(
             user_id=filter_user_id,
             risk_level=risk_level,
             sort_by=sort_by,
-            current_user_id=current_user.id,
+            current_user_id=current_user.id if current_user else None,
         )
         return result
     except Exception as e:

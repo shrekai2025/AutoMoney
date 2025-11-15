@@ -625,62 +625,81 @@ Investors seeking long-term stable returns who trust in the fundamental value pr
     ) -> List[AgentContribution]:
         """获取策略执行中各个Agent的贡献详情"""
 
-        # 首先尝试通过 strategy_execution_id 直接查询（单独执行的情况）
-        stmt = (
-            select(AgentExecution)
-            .where(AgentExecution.strategy_execution_id == execution_id)
-            .order_by(AgentExecution.executed_at.desc())
+        # 获取策略执行记录和关联的策略定义
+        from app.models.strategy_execution import StrategyExecution
+        stmt_exec = (
+            select(StrategyExecution)
+            .options(selectinload(StrategyExecution.portfolio).selectinload(Portfolio.strategy_definition))
+            .where(StrategyExecution.id == execution_id)
         )
-        result = await db.execute(stmt)
-        agent_execs = result.scalars().all()
+        result_exec = await db.execute(stmt_exec)
+        strategy_exec = result_exec.scalar_one_or_none()
 
-        # 如果查询为空，说明是批量执行，需要通过时间窗口查询
+        if not strategy_exec:
+            return []
+
+        # 首先尝试通过 template_execution_batch_id 精准查询（批量执行的情况）
+        agent_execs = []
+        if strategy_exec.template_execution_batch_id:
+            stmt = (
+                select(AgentExecution)
+                .where(AgentExecution.template_execution_batch_id == strategy_exec.template_execution_batch_id)
+                .order_by(AgentExecution.executed_at.desc())
+            )
+            result = await db.execute(stmt)
+            agent_execs = result.scalars().all()
+
+        # 如果仍然为空，尝试通过 strategy_execution_id 直接查询（单独执行的情况）
         if not agent_execs:
-            # 获取当前策略执行的时间
-            from app.models.strategy_execution import StrategyExecution
-            stmt_exec = select(StrategyExecution).where(StrategyExecution.id == execution_id)
-            result_exec = await db.execute(stmt_exec)
-            strategy_exec = result_exec.scalar_one_or_none()
+            stmt = (
+                select(AgentExecution)
+                .where(AgentExecution.strategy_execution_id == execution_id)
+                .order_by(AgentExecution.executed_at.desc())
+            )
+            result = await db.execute(stmt)
+            agent_execs = result.scalars().all()
 
-            if strategy_exec:
-                # 批量执行时，agent_executions 的时间略早于 strategy_execution
-                # 使用 ±10秒的时间窗口查询（agent分析通常在5秒内完成）
-                from datetime import timedelta
-                time_start = strategy_exec.execution_time - timedelta(seconds=10)
-                time_end = strategy_exec.execution_time + timedelta(seconds=5)
-
-                stmt = (
-                    select(AgentExecution)
-                    .where(
-                        AgentExecution.strategy_execution_id.is_(None),  # 批量执行的记录
-                        AgentExecution.executed_at >= time_start,
-                        AgentExecution.executed_at <= time_end,
-                    )
-                    .order_by(AgentExecution.executed_at.desc())
-                )
-                result = await db.execute(stmt)
-                agent_execs = result.scalars().all()
-
-        # Agent显示名称映射
+        # Agent显示名称映射（支持所有agents）
         agent_display_names = {
-            "macro_agent": "Macro Scout",
+            # Multi-Agent BTC Strategy agents
+            "macro": "The Oracle",
+            "macro_agent": "The Oracle",
+            "ta": "Momentum Scout",
             "ta_agent": "Momentum Scout",
-            "onchain_agent": "Chain Guardian",
+            "onchain": "Data Warden",
+            "onchain_agent": "Data Warden",
+            # H.I.M.E. Momentum Strategy agents
+            "regime_filter": "Regime Filter",
+            "ta_momentum": "TA Momentum",
         }
+
+        # 获取策略定义的business_agents列表（用于过滤和排序）
+        expected_agents = []
+        if strategy_exec.portfolio and strategy_exec.portfolio.strategy_definition:
+            expected_agents = strategy_exec.portfolio.strategy_definition.business_agents or []
 
         contributions = []
         for agent_exec in agent_execs:
+            # 只包含策略定义中声明的agents
+            if expected_agents and agent_exec.agent_name not in expected_agents:
+                continue
+
             contribution = AgentContribution(
                 agent_name=agent_exec.agent_name,
-                display_name=agent_display_names.get(agent_exec.agent_name, agent_exec.agent_name),
+                display_name=agent_display_names.get(agent_exec.agent_name, agent_exec.agent_display_name or agent_exec.agent_name),
                 signal=agent_exec.signal,
                 confidence=float(agent_exec.confidence),
                 score=float(agent_exec.score),
             )
             contributions.append(contribution)
 
-        # 按agent_name字母顺序排序
-        contributions.sort(key=lambda x: x.agent_name)
+        # 按expected_agents顺序排序（保持策略定义的顺序）
+        if expected_agents:
+            agent_order = {name: idx for idx, name in enumerate(expected_agents)}
+            contributions.sort(key=lambda x: agent_order.get(x.agent_name, 999))
+        else:
+            # 如果没有expected_agents，按agent_name字母顺序排序
+            contributions.sort(key=lambda x: x.agent_name)
 
         return contributions
 
